@@ -1,0 +1,4 @@
+Thrid_Party/
+build/
+*.obj
+*.exe
