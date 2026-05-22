@@ -436,6 +436,52 @@ int i = (y * TEX_SIZE + x) * 4;
 pixels[i+0] = r; pixels[i+1] = g; pixels[i+2] = b; pixels[i+3] = 255;
 }
 }
+
+// Torch — glowing yellow/orange light source.
+void TextureArray::genTorch(PixelBuf pixels)
+{
+	for (int y = 0; y < TEX_SIZE; ++y)
+	for (int x = 0; x < TEX_SIZE; ++x)
+	{
+		int i = (y * TEX_SIZE + x) * 4;
+		// Create a torch shape: stick at bottom, flame at top
+		int centerX = TEX_SIZE / 2;
+		int distFromCenter = abs(x - centerX);
+
+		// Flame (upper half, bright yellow/orange)
+		if (y < TEX_SIZE / 2)
+		{
+			float flameIntensity = 1.0f - (float)y / (TEX_SIZE / 2);
+			flameIntensity *= (1.0f - (float)distFromCenter / 4.0f);
+			if (flameIntensity > 0.0f && distFromCenter < 5)
+			{
+				pixels[i+0] = clamp8(255.0f * flameIntensity);       // R
+				pixels[i+1] = clamp8(200.0f * flameIntensity * 0.8f); // G
+				pixels[i+2] = clamp8(50.0f * flameIntensity * 0.3f);  // B
+				pixels[i+3] = 255;
+			}
+			else
+			{
+				pixels[i+0] = 0; pixels[i+1] = 0; pixels[i+2] = 0; pixels[i+3] = 0; // Transparent
+			}
+		}
+		// Stick (lower half, brown wood)
+		else
+		{
+			if (distFromCenter < 2)
+			{
+				pixels[i+0] = 101;  // Brown stick
+				pixels[i+1] = 67;
+				pixels[i+2] = 33;
+				pixels[i+3] = 255;
+			}
+			else
+			{
+				pixels[i+0] = 0; pixels[i+1] = 0; pixels[i+2] = 0; pixels[i+3] = 0; // Transparent
+			}
+		}
+	}
+}
 // ---------------------------------------------------------------------------
 // TextureArray — build / bind / destroy
 // ---------------------------------------------------------------------------
@@ -488,9 +534,10 @@ void TextureArray::build()
 		genRock5,        // 40
 		genRock6,        // 41
 		genRock7,        // 42
-		genRock8,        // 43
-		genMushroom,     // 44
-	};
+			genRock8,        // 43
+			genMushroom,     // 44
+			genTorch,        // 45
+		};
 
 	glGenTextures(1, &m_handle);
 	glBindTexture(GL_TEXTURE_2D_ARRAY, m_handle);

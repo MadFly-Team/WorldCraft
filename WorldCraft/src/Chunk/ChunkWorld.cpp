@@ -49,6 +49,10 @@ void ChunkEntry::upload()
 		glEnableVertexAttribArray(2);
 		glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(CV, light)));
 		glEnableVertexAttribArray(3);
+		glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(CV, faceType)));
+		glEnableVertexAttribArray(4);
+		glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(offsetof(CV, skyLight)));
+		glEnableVertexAttribArray(5);
 	};
 
 	// Upload all 5 LOD levels separately
@@ -470,11 +474,14 @@ void ChunkWorld::drainReadyQueue()
 		if (dx > m_renderDist + 1 || dz > m_renderDist + 1)
 			continue;
 
-		// A duplicate mesh result can arrive after the chunk has already been
-		// uploaded (the worker clears m_inFlight before the main thread drains the
-		// ready queue).  Skip it before any GPU upload to avoid leaking VAOs/VBOs.
-		if (m_chunks.count(c) != 0)
-			continue;
+		// If this chunk already exists, destroy the old mesh and replace it with the new one
+		// (this happens when a block is modified and the chunk is remeshed)
+		auto existingIt = m_chunks.find(c);
+		if (existingIt != m_chunks.end())
+		{
+			existingIt->second->destroy();
+			m_chunks.erase(existingIt);
+		}
 
 		entry->upload();
 		m_chunks.emplace(c, std::move(entry));
@@ -830,6 +837,130 @@ Voxel::BlockID ChunkWorld::getBlockAt(float worldX, float worldY, float worldZ) 
 
 	// Chunk not loaded yet - return air
 	return Voxel::BlockID::Air;
+}
+
+bool ChunkWorld::setBlockAt(float worldX, float worldY, float worldZ, Voxel::BlockID newBlock)
+{
+	// Convert world position to chunk coordinates
+	const int cx = static_cast<int>(std::floor(worldX / CHUNK_SIZE_X));
+	const int cz = static_cast<int>(std::floor(worldZ / CHUNK_SIZE_Z));
+
+	// Convert to local chunk coordinates
+	const int lx = static_cast<int>(std::floor(worldX)) - (cx * CHUNK_SIZE_X);
+	const int ly = static_cast<int>(std::floor(worldY));
+	const int lz = static_cast<int>(std::floor(worldZ)) - (cz * CHUNK_SIZE_Z);
+
+	// Bounds check
+	if (ly < 0 || ly >= CHUNK_SIZE_Y) return false;
+	if (lx < 0 || lx >= CHUNK_SIZE_X) return false;
+	if (lz < 0 || lz >= CHUNK_SIZE_Z) return false;
+
+	ChunkCoord coord{ cx, cz };
+
+	// Modify the block in the voxel cache (persistent chunk data)
+	{
+		std::unique_lock<std::shared_mutex> lock(m_voxelMutex);
+		auto it = m_voxelCache.find(coord);
+		if (it != m_voxelCache.end())
+		{
+			it->second->setBlock(lx, ly, lz, newBlock);
+		}
+		else
+		{
+			// Chunk not in voxel cache yet - can't modify
+			return false;
+		}
+	}
+
+	// Trigger a remesh of the modified chunk and its neighbors
+	// Define neighbor coordinates
+	const ChunkCoord neighbors[4] = {
+		{ cx - 1, cz },      // West
+		{ cx + 1, cz },      // East
+		{ cx, cz - 1 },      // North
+		{ cx, cz + 1 }       // South
+	};
+
+	// Remove modified chunk and all neighbors from tracking sets so they can be remeshed
+	{
+		std::lock_guard<std::mutex> lock(m_inFlightMutex);
+		m_inFlight.erase(coord);
+		for (const auto& nb : neighbors)
+			m_inFlight.erase(nb);
+	}
+	{
+		std::lock_guard<std::mutex> lock(m_uploadedMutex);
+		m_uploadedSet.erase(coord);
+		for (const auto& nb : neighbors)
+			m_uploadedSet.erase(nb);
+	}
+	{
+		std::lock_guard<std::mutex> lock(m_pendingUploadMutex);
+		m_pendingUploadSet.erase(coord);
+		for (const auto& nb : neighbors)
+			m_pendingUploadSet.erase(nb);
+	}
+
+	// Also update the chunk entry if it's loaded, but don't destroy it yet
+	// (it will be replaced when the new mesh is uploaded)
+	{
+		auto it = m_chunks.find(coord);
+		if (it != m_chunks.end())
+		{
+			it->second->chunk.setBlock(lx, ly, lz, newBlock);
+		}
+	}
+
+	// Enqueue mesh jobs for modified chunk and all neighbors
+	tryEnqueueMesh(coord);
+	for (const auto& nb : neighbors)
+		tryEnqueueMesh(nb);
+
+	return true;
+}
+
+Chunk* ChunkWorld::getChunk(int chunkX, int chunkZ)
+{
+	ChunkCoord coord{ chunkX, chunkZ };
+
+	// First check the main chunk map (uploaded chunks)
+	auto it = m_chunks.find(coord);
+	if (it != m_chunks.end())
+	{
+		return &it->second->chunk;
+	}
+
+	// Fall back to voxel cache (chunks being generated/meshed)
+	std::shared_lock<std::shared_mutex> lock(m_voxelMutex);
+	auto cacheIt = m_voxelCache.find(coord);
+	if (cacheIt != m_voxelCache.end())
+	{
+		return cacheIt->second.get();
+	}
+
+	return nullptr;
+}
+
+const Chunk* ChunkWorld::getChunk(int chunkX, int chunkZ) const
+{
+	ChunkCoord coord{ chunkX, chunkZ };
+
+	// First check the main chunk map (uploaded chunks)
+	auto it = m_chunks.find(coord);
+	if (it != m_chunks.end())
+	{
+		return &it->second->chunk;
+	}
+
+	// Fall back to voxel cache (chunks being generated/meshed)
+	std::shared_lock<std::shared_mutex> lock(m_voxelMutex);
+	auto cacheIt = m_voxelCache.find(coord);
+	if (cacheIt != m_voxelCache.end())
+	{
+		return cacheIt->second.get();
+	}
+
+	return nullptr;
 }
 
 } // namespace Chunk

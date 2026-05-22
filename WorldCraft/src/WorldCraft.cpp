@@ -4,12 +4,15 @@
 #include <Renderer/Shader.h>
 #include <Renderer/Window.h>
 #include <Renderer/Camera.h>
+#include <Renderer/WireframeCube.h>
 #include <Texture/BlockTextures.h>
 #include <Chunk/ChunkWorld.h>
 #include <WorldGen/TerrainGen.h>
+#include <World/WaterSimulation.h>
 #include <UI/ImGuiManager.h>
 #include <UI/SettingsDialog.h>
 #include <WorldGen/WorldSettings.h>
+#include <Utils/Raycast.h>
 #include <imgui.h>
 #include <thread>
 #include <chrono>
@@ -43,6 +46,7 @@ static const char* kSkyFragFinal = R"glsl(
 uniform mat4  uInvViewProj;
 uniform vec2  uResolution;
 uniform float uTimeOfDay;     // [0,1)
+uniform float uTime;          // Absolute time for cloud animation
 
 out vec4 FragColor;
 
@@ -108,6 +112,57 @@ float starField(vec3 dir)
     return (h > 0.993 && h2 > 0.5) ? pow(h2, 3.0) : 0.0;
 }
 
+// Simple 2D noise for clouds
+float hash(vec2 p)
+{
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float noise2D(vec2 p)
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);  // Smoothstep
+
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Minecraft-style clouds: blocky, flat-bottomed
+float minecraftClouds(vec3 rayDir, float time)
+{
+    // Only render clouds in upper hemisphere
+    if (rayDir.y < 0.05) return 0.0;
+
+    // Cloud layer height
+    float cloudHeight = 120.0;
+
+    // Ray-plane intersection to find where ray hits cloud layer
+    float t = cloudHeight / rayDir.y;
+    vec3 cloudPos = rayDir * t;
+
+    // Horizontal position with slow drift
+    vec2 cloudUV = cloudPos.xz * 0.008 + vec2(time * 0.005, time * 0.002);
+
+    // Layered noise for blocky clouds
+    float n = 0.0;
+    n += noise2D(cloudUV * 2.0) * 0.5;
+    n += noise2D(cloudUV * 4.0) * 0.25;
+    n += noise2D(cloudUV * 8.0) * 0.125;
+
+    // Threshold to create blocky appearance
+    float cloudDensity = smoothstep(0.45, 0.55, n);
+
+    // Fade out near horizon
+    float horizonFade = smoothstep(0.05, 0.25, rayDir.y);
+
+    return cloudDensity * horizonFade;
+}
+
 void main()
 {
     // Reconstruct normalised view ray.
@@ -155,6 +210,12 @@ void main()
     float star = starField(starDir);
     sky += vec3(star) * nightness * 1.4;
 
+    // Minecraft-style clouds (only during day)
+    float dayAmount = clamp(sd.y * 2.0, 0.0, 1.0);
+    float cloudAmount = minecraftClouds(rayDir, uTime);
+    vec3 cloudColor = vec3(1.0, 1.0, 1.0) * 0.95;  // Slightly off-white
+    sky = mix(sky, cloudColor, cloudAmount * dayAmount);
+
     // Below-horizon: fill with the horizon colour so any pixel gap between
     // world geometry and the sky edge is invisible (matches the fog colour).
     if (rayDir.y < -0.02)
@@ -182,11 +243,15 @@ layout(location = 0) in vec3  aPos;
 layout(location = 1) in vec2  aUV;
 layout(location = 2) in float aTexLayer;
 layout(location = 3) in float aLight;
+layout(location = 4) in float aFaceType;  // 0=side/bottom, 1=top
+layout(location = 5) in float aSkyLight;  // Sky light level 0-15
 
 uniform mat4 uMVP;
 uniform vec3 uCamPos;
 uniform vec3 uChunkOffset;
 uniform float uSunHeight;  // -1..1 from sky shader
+uniform float uTime;
+uniform bool uEnableWaves;  // Water wave toggle
 
 out vec2  vUV;
 out float vTexLayer;
@@ -195,11 +260,35 @@ out float vFogDist;
 out float vWorldY;
 out float vCamY;
 out vec3  vWorldPos;
+out float vSkyLight;  // Pass through sky light
 
 void main()
 {
     vec3 worldPos = aPos + uChunkOffset;
-    gl_Position   = uMVP * vec4(aPos, 1.0);
+
+    // Apply wave displacement to water blocks (texture layer 11)
+    if (uEnableWaves && abs(aTexLayer - 11.0) < 0.1)
+    {
+        // Multi-frequency wave for natural ocean motion
+        float wave1 = sin(worldPos.x * 0.5 + uTime * 1.2) * cos(worldPos.z * 0.4 + uTime * 0.8);
+        float wave2 = sin(worldPos.x * 0.3 - uTime * 0.9) * sin(worldPos.z * 0.5 + uTime * 1.1);
+        float wave3 = cos((worldPos.x + worldPos.z) * 0.2 + uTime * 0.6);
+
+        // Combine waves with different amplitudes
+        float waveHeight = (wave1 * 0.12 + wave2 * 0.08 + wave3 * 0.06);
+
+        // Displace vertices that are part of the water surface:
+        // - Top faces: aFaceType = 1.0
+        // - Side face top edges: aFaceType = 0.5
+        // - Side face bottom edges: aFaceType = 0.0 (not displaced)
+        // - Bottom faces: aFaceType = 0.0 (not displaced)
+        float shouldDisplace = step(0.4, aFaceType);  // 1.0 if aFaceType >= 0.5
+
+        // Small offset prevents z-fighting with solid block tops
+        worldPos.y += (waveHeight + 0.002) * shouldDisplace;
+    }
+
+    gl_Position   = uMVP * vec4(worldPos - uChunkOffset, 1.0);
     vUV           = aUV;
     vTexLayer     = aTexLayer;
     // Scale geometry light by sun height so world darkens at night.
@@ -209,6 +298,7 @@ void main()
     vWorldY       = worldPos.y;
     vCamY         = uCamPos.y;
     vWorldPos     = worldPos;
+    vSkyLight     = aSkyLight;
 }
 )glsl";
 
@@ -225,6 +315,7 @@ in  float vFogDist;
 in  float vWorldY;
 in  float vCamY;
 in  vec3  vWorldPos;
+in  float vSkyLight;  // Sky light level 0-15
 
 uniform sampler2DArray uTexArray;
 uniform float uFogStart;
@@ -233,6 +324,8 @@ uniform vec3  uFogColour;
 uniform float uSeaLevel;
 uniform float uTime;
 uniform bool  uInWater;  // NEW: Is camera actually in water (not just below sea level)?
+uniform vec3  uTorchPos;  // Character torch position
+uniform bool  uTorchEnabled;  // Character torch on/off
 
 out vec4 FragColor;
 
@@ -272,24 +365,32 @@ void main()
         discard;
 
     // vLight already contains: kFaceLight * AO_factor * sunFactor (from vertex shader).
-    // Split into a small constant ambient (sky-light bounce) plus the AO-baked diffuse.
-    // The ambient ensures blocks are never pitch-black even in deep shadow.
     vec3 baseColour = tex.rgb;
-    vec3 ambient    = baseColour * 0.12;          // dim sky-bounce, always present
-    vec3 diffuse    = baseColour * vLight;        // AO + face directional + sun height
+
+    // Sky light brightness: 0-15 scale to 0.0-1.0
+    // Very gentle curve to minimize dark patches
+    float skyBrightness = pow(vSkyLight / 15.0, 1.0);  // Linear response (was 1.2)
+    skyBrightness = clamp(skyBrightness, 0.20, 1.0);  // 20% minimum brightness (was 0.12)
+
+    // Combine AO/face lighting with sky light
+    vec3 ambient    = baseColour * 0.12;              // Higher ambient (was 0.08)
+    vec3 diffuse    = baseColour * vLight * skyBrightness;  // AO + face + sky light
     vec3 lit        = clamp(ambient + diffuse, vec3(0.0), vec3(1.0));
 
     // Subtle gamma-space lift: raise lit to ~1/1.8 so mid-tones look richer.
     lit = pow(lit, vec3(1.0 / 1.8));
 
-    // Cave lighting: blocks below Y=60 progressively darken
-    // This creates proper cave darkness without needing surface height data
-    if (vWorldY < 60.0)
+    // Character torch lighting (if enabled) - applied AFTER cave darkening
+    if (uTorchEnabled)
     {
-        float caveDepth = 60.0 - vWorldY;  // 0 at Y=60, increases downward
-        float caveDarkness = exp(-caveDepth * 0.08);  // Exponential darkening
-        caveDarkness = clamp(caveDarkness, 0.15, 1.0);  // Never completely black (0.15 minimum)
-        lit *= caveDarkness;
+        float torchDist = length(vWorldPos - uTorchPos);
+        float torchRadius = 10.0;  // Maximum light reach (reduced from 12)
+        float torchAttenuation = clamp(1.0 - (torchDist / torchRadius), 0.0, 1.0);
+        torchAttenuation = torchAttenuation * torchAttenuation * torchAttenuation;  // Cubic falloff for faster dropoff
+
+        // Softer warm torch light - less intense, more natural
+        vec3 torchColor = vec3(1.0, 0.7, 0.4) * 0.5;  // Reduced from 1.2 to 0.5
+        lit += torchColor * torchAttenuation;
     }
 
     // Underwater darkening: blocks below sea level darken with depth.
@@ -382,16 +483,23 @@ int main()
         GLint  sunHeightLoc = -1;
         GLint  timeLoc = -1;
         GLint  inWaterLoc = -1;  // NEW: Is camera actually in water?
+        GLint  enableWavesLoc = -1;  // Water wave toggle
+        GLint  torchPosLoc = -1;  // Character torch position
+        GLint  torchEnabledLoc = -1;  // Character torch on/off
 
         GLuint skyProg = 0;
         GLint  skyInvVPLoc = -1;
         GLint  skyResLoc = -1;
         GLint  skyTodLoc = -1;
+        GLint  skyTimeLoc = -1;
         GLuint skyVAO = 0;
+
+        Renderer::WireframeCube wireframeCube;  // Block highlight renderer
     };
 
     auto destroyRenderResources = [](RenderResources& rr)
     {
+        rr.wireframeCube.cleanup();
         if (rr.skyVAO)
         {
             glDeleteVertexArrays(1, &rr.skyVAO);
@@ -431,13 +539,20 @@ int main()
         rr.sunHeightLoc = glGetUniformLocation(rr.shaderProg, "uSunHeight");
         rr.timeLoc = glGetUniformLocation(rr.shaderProg, "uTime");
         rr.inWaterLoc = glGetUniformLocation(rr.shaderProg, "uInWater");
+        rr.enableWavesLoc = glGetUniformLocation(rr.shaderProg, "uEnableWaves");
+        rr.torchPosLoc = glGetUniformLocation(rr.shaderProg, "uTorchPos");
+        rr.torchEnabledLoc = glGetUniformLocation(rr.shaderProg, "uTorchEnabled");
 
         rr.skyProg = Renderer::buildProgram(kSkyVert, kSkyFragFinal);
         rr.skyInvVPLoc = glGetUniformLocation(rr.skyProg, "uInvViewProj");
         rr.skyResLoc = glGetUniformLocation(rr.skyProg, "uResolution");
         rr.skyTodLoc = glGetUniformLocation(rr.skyProg, "uTimeOfDay");
+        rr.skyTimeLoc = glGetUniformLocation(rr.skyProg, "uTime");
 
         glGenVertexArrays(1, &rr.skyVAO);
+
+        // Initialize wireframe cube for block highlighting
+        rr.wireframeCube.init();
     };
 
     // ---- Window & GL context ------------------------------------------------
@@ -476,6 +591,10 @@ int main()
     // Start with default settings
     WorldGen::WorldSettings currentSettings = WorldGen::WorldSettings::createDefault();
     auto world = std::make_unique<Chunk::ChunkWorld>(currentSettings);
+
+    // ---- Water Simulation ---------------------------------------------------
+    World::WaterSimulation waterSim;
+    float waterTickAccumulator = 0.0f;
 
     // Callback for when user generates a new world
     bool needsWorldRegeneration = false;
@@ -523,6 +642,7 @@ int main()
     Uint64 lastTime = SDL_GetPerformanceCounter();
     const Uint64 perfFreq = SDL_GetPerformanceFrequency();
     bool shouldQuit = false;
+    bool characterTorchEnabled = false;  // Toggle for character's torch light
 
     while (!shouldQuit)
     {
@@ -579,6 +699,11 @@ int main()
                         flyCamera.setOrientation(charCamera.yaw(), charCamera.pitch());
                     }
                 }
+                else if (event.key.keysym.sym == SDLK_t && !dialogOpen)
+                {
+                    // 'T' key toggles character torch light
+                    characterTorchEnabled = !characterTorchEnabled;
+                }
                 else if (event.key.keysym.sym == SDLK_ESCAPE && !dialogOpen)
                 {
                     // ESC quits only if dialog is closed (ESC within dialog is handled by ImGui)
@@ -593,6 +718,8 @@ int main()
             currentSettings = pendingSettings;
             world.reset();  // Destroy old world
             world = std::make_unique<Chunk::ChunkWorld>(currentSettings);
+            waterSim.clear();  // Clear water simulation state
+            waterTickAccumulator = 0.0f;
             needsWorldRegeneration = false;
         }
 
@@ -603,6 +730,95 @@ int main()
                 flyCamera.update(window, delta);
             else
                 charCamera.update(window, delta, world.get());
+        }
+
+        // ---- Block targeting and removal (Character camera only) ----------------
+        std::optional<Utils::RaycastHit> targetBlock;
+        if (!dialogOpen && cameraMode == CameraMode::Character && world)
+        {
+            // Perform raycast from camera eye position along look direction
+            glm::vec3 rayOrigin = charCamera.position();
+            glm::vec3 rayDir = charCamera.forward();
+            constexpr float maxReach = 5.0f;  // Minecraft-style reach distance
+
+            // Raycast through voxels to find target block
+            targetBlock = Utils::raycastVoxel(rayOrigin, rayDir, maxReach,
+                [&world](int x, int y, int z) -> bool {
+                    // Check if this voxel is solid (not air/water)
+                    return world->isBlockSolid(static_cast<float>(x),
+                                               static_cast<float>(y),
+                                               static_cast<float>(z));
+                });
+
+            // Handle right mouse button to remove block
+            Uint32 mouseState = SDL_GetMouseState(nullptr, nullptr);
+            static bool wasRightPressed = false;
+            bool isRightPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+
+            if (isRightPressed && !wasRightPressed && targetBlock.has_value())
+            {
+                // Remove the targeted block (set to air)
+                const glm::ivec3& blockPos = targetBlock->blockPos;
+
+                // Prevent removal of bedrock layer at Y=0 (indestructible bottom)
+                if (blockPos.y == 0)
+                {
+                    wasRightPressed = isRightPressed;
+                    continue;
+                }
+
+                world->setBlockAt(static_cast<float>(blockPos.x),
+                                 static_cast<float>(blockPos.y),
+                                 static_cast<float>(blockPos.z),
+                                 Voxel::BlockID::Air);
+
+                // Mark surrounding water blocks for flow updates
+                if (currentSettings.enableWaterFlow)
+                {
+                    // Check all 6 neighbors for water
+                    const int dx[] = { 1, -1, 0, 0, 0, 0 };
+                    const int dy[] = { 0, 0, 1, -1, 0, 0 };
+                    const int dz[] = { 0, 0, 0, 0, 1, -1 };
+
+                    for (int i = 0; i < 6; ++i)
+                    {
+                        int nx = blockPos.x + dx[i];
+                        int ny = blockPos.y + dy[i];
+                        int nz = blockPos.z + dz[i];
+
+                        Voxel::BlockID neighborBlock = world->getBlockAt(
+                            static_cast<float>(nx),
+                            static_cast<float>(ny),
+                            static_cast<float>(nz));
+
+                        if (neighborBlock == Voxel::BlockID::Water)
+                        {
+                            waterSim.markForUpdate(nx, ny, nz);
+                        }
+                    }
+                }
+            }
+
+            wasRightPressed = isRightPressed;
+        }
+
+        // ---- Water Simulation Tick ----------------------------------------------
+        if (currentSettings.enableWaterFlow && !dialogOpen && world)
+        {
+            waterTickAccumulator += delta;
+            float tickInterval = 1.0f / currentSettings.waterFlowRate;
+
+            if (waterTickAccumulator >= tickInterval)
+            {
+                waterTickAccumulator -= tickInterval;
+
+                // Run water simulation update (within player range)
+                glm::vec3 playerPos = (cameraMode == CameraMode::FreeFly) 
+                    ? flyCamera.position() 
+                    : charCamera.position();
+
+                waterSim.update(world.get(), playerPos, 64.0f); // Update water within 64 blocks
+            }
         }
 
         // Pause time progression when dialog is open
@@ -661,6 +877,7 @@ int main()
         glUniformMatrix4fv(rr.skyInvVPLoc, 1, GL_FALSE, glm::value_ptr(invVP));
         glUniform2f(rr.skyResLoc, static_cast<float>(fbW), static_cast<float>(fbH));
         glUniform1f(rr.skyTodLoc, timeOfDay);
+        glUniform1f(rr.skyTimeLoc, static_cast<float>(SDL_GetTicks64()) / 1000.0f);
         glBindVertexArray(rr.skyVAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
@@ -699,9 +916,21 @@ int main()
         glUniform1f(rr.sunHeightLoc, sunHeight);
         glUniform1f(rr.timeLoc, static_cast<float>(SDL_GetTicks64()) / 1000.0f);
         glUniform1i(rr.inWaterLoc, cameraInWater ? 1 : 0);
+        glUniform1i(rr.enableWavesLoc, currentSettings.enableWaterWaves ? 1 : 0);
+        glUniform3f(rr.torchPosLoc, camPos.x, camPos.y, camPos.z);  // Torch at camera position
+        glUniform1i(rr.torchEnabledLoc, characterTorchEnabled ? 1 : 0);
 
         if (world)
             world->render(rr.mvpLoc, rr.chunkOffsetLoc, camPos, view, proj);
+
+        // ---- Block highlight (wireframe cube) -----------------------------------
+        if (targetBlock.has_value())
+        {
+            // Render wireframe outline around targeted block
+            const glm::mat4 mvp = proj * view;
+            const glm::vec4 highlightColor(1.0f, 1.0f, 1.0f, 0.5f);  // White, semi-transparent
+            rr.wireframeCube.render(targetBlock->blockPos, mvp, highlightColor);
+        }
 
         // ---- ImGui overlay --------------------------------------------------
         imguiManager.newFrame();

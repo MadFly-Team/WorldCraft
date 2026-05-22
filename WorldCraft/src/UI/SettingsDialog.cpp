@@ -68,6 +68,11 @@ bool SettingsDialog::render()
 		renderTreeSettings();
 	}
 
+	if (ImGui::CollapsingHeader("Water Settings"))
+	{
+		renderWaterSettings();
+	}
+
 	ImGui::Separator();
 	renderGenerateButton();
 
@@ -203,6 +208,24 @@ void SettingsDialog::renderTreeSettings()
 		ImGui::TextDisabled("Probability of tree spawning per suitable block");
 		ImGui::Unindent();
 	}
+}
+
+void SettingsDialog::renderWaterSettings()
+{
+	ImGui::Checkbox("Enable Water Flow", &m_settings.enableWaterFlow);
+	ImGui::TextDisabled("Water spreads into adjacent air spaces when blocks are removed");
+
+	if (m_settings.enableWaterFlow)
+	{
+		ImGui::Indent();
+		ImGui::SliderFloat("Flow Rate", &m_settings.waterFlowRate, 0.1f, 2.0f, "%.1f ticks/sec");
+		ImGui::TextDisabled("How fast water spreads (higher = faster)");
+		ImGui::Unindent();
+	}
+
+	ImGui::Spacing();
+	ImGui::Checkbox("Enable Water Waves", &m_settings.enableWaterWaves);
+	ImGui::TextDisabled("Visual wave effect on water surfaces (performance impact)");
 }
 
 void SettingsDialog::renderGenerateButton()

@@ -132,6 +132,14 @@ void update(const glm::vec3& cameraPos);
 	// Get the block at a world-space position (for underwater effect checking)
 	Voxel::BlockID getBlockAt(float worldX, float worldY, float worldZ) const;
 
+	// Set a block at a world-space position and trigger chunk remesh.
+	// Returns true if the block was successfully modified, false if out of bounds.
+	bool setBlockAt(float worldX, float worldY, float worldZ, Voxel::BlockID newBlock);
+
+	// Access chunk for light propagation (returns nullptr if not loaded)
+	Chunk* getChunk(int chunkX, int chunkZ);
+	const Chunk* getChunk(int chunkX, int chunkZ) const;
+
 private:
 	WorldGen::WorldSettings m_settings;
 	int  m_renderDist;
