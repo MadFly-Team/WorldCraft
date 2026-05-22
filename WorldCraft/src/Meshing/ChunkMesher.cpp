@@ -38,12 +38,14 @@ static constexpr FaceCorner kFaceQuads[6][4] = {
 	// PosX (+X face, normal = +X)
 	// viewed from +X: Z increases left, Y increases up
 	// A=(1,0,1) B=(1,0,0) C=(1,1,0) D=(1,1,1)   (B-A)×(C-A) = +X ✓
-	{{ 1,0,1, 0,0 }, { 1,0,0, 1,0 }, { 1,1,0, 1,1 }, { 1,1,1, 0,1 }},
+	// UVs flipped 180° for grass side texture orientation
+	{{ 1,0,1, 1,1 }, { 1,0,0, 0,1 }, { 1,1,0, 0,0 }, { 1,1,1, 1,0 }},
 
 	// NegX (-X face, normal = -X)
 	// viewed from -X: Z increases right, Y increases up
 	// A=(0,0,0) B=(0,0,1) C=(0,1,1) D=(0,1,0)   (B-A)×(C-A) = -X ✓
-	{{ 0,0,0, 0,0 }, { 0,0,1, 1,0 }, { 0,1,1, 1,1 }, { 0,1,0, 0,1 }},
+	// UVs flipped 180° for grass side texture orientation
+	{{ 0,0,0, 1,1 }, { 0,0,1, 0,1 }, { 0,1,1, 0,0 }, { 0,1,0, 1,0 }},
 
 	// PosY (+Y face, normal = +Y, top face)
 	// A=(0,1,0) B=(0,1,1) C=(1,1,1) D=(1,1,0)
@@ -58,12 +60,14 @@ static constexpr FaceCorner kFaceQuads[6][4] = {
 	// PosZ (+Z face, normal = +Z, front face)
 	// viewed from +Z: X increases right, Y increases up
 	// A=(0,0,1) B=(1,0,1) C=(1,1,1) D=(0,1,1)   (B-A)×(C-A) = +Z ✓
-	{{ 0,0,1, 0,0 }, { 1,0,1, 1,0 }, { 1,1,1, 1,1 }, { 0,1,1, 0,1 }},
+	// UVs flipped 180° for grass side texture orientation
+	{{ 0,0,1, 1,1 }, { 1,0,1, 0,1 }, { 1,1,1, 0,0 }, { 0,1,1, 1,0 }},
 
 	// NegZ (-Z face, normal = -Z, back face)
 	// viewed from -Z: X increases left, Y increases up
 	// A=(1,0,0) B=(0,0,0) C=(0,1,0) D=(1,1,0)   (B-A)×(C-A) = -Z ✓
-	{{ 1,0,0, 0,0 }, { 0,0,0, 1,0 }, { 0,1,0, 1,1 }, { 1,1,0, 0,1 }},
+	// UVs flipped 180° for grass side texture orientation
+	{{ 1,0,0, 1,1 }, { 0,0,0, 0,1 }, { 0,1,0, 0,0 }, { 1,1,0, 1,0 }},
 };
 
 static constexpr int kTriIdx[6] = { 0, 1, 2, 0, 2, 3 };
@@ -284,18 +288,39 @@ void ChunkMesher::emitFace(std::vector<ChunkVertex>& out,
 						   int x, int y, int z,
 						   Voxel::FaceDir face,
 						   int texLayer,
-						   const float lights[4])
+						   const float lights[4],
+						   const float skyLights[4],
+						   bool isWaterSurface)
 {
 	const int fi = static_cast<int>(face);
 	const FaceCorner* c = kFaceQuads[fi];
 
+	// Mark face types for wave shader:
+	// - Top faces (PosY) of water surface: faceType = 1.0
+	// - Side faces of water surface: vertices at dy=1 get faceType=0.5, others get 0.0
+	// - Underwater blocks: all vertices get faceType = 0.0
+	// - Bottom faces (NegY): faceType = 0.0
+	const bool isTopFace = (face == Voxel::FaceDir::PosY);
+	const bool isSideFace = (face != Voxel::FaceDir::PosY && face != Voxel::FaceDir::NegY);
+
 	ChunkVertex quad[4];
 	for (int i = 0; i < 4; ++i)
+	{
+		float faceType = 0.0f;
+		if (isWaterSurface)
+		{
+			if (isTopFace)
+				faceType = 1.0f;
+			else if (isSideFace && c[i].dy > 0.5f)  // Top edge of side face
+				faceType = 0.5f;
+		}
+
 		quad[i] = ChunkVertex::make(
 			static_cast<float>(x) + c[i].dx,
 			static_cast<float>(y) + c[i].dy,
 			static_cast<float>(z) + c[i].dz,
-			c[i].u, c[i].v, texLayer, lights[i]);
+			c[i].u, c[i].v, texLayer, lights[i], faceType, skyLights[i]);
+	}
 
 	// AO anisotropy fix: choose the quad diagonal that keeps the darker
 	// crease consistent (avoids ugly "pinching" on AO-darkened corners).
@@ -355,10 +380,35 @@ ChunkMesh ChunkMesher::build(const Chunk::Chunk& chunk,
 			const int layer  = reg.texLayer(id, fdir);
 			auto& target     = isTransp ? mesh.transparent : mesh.opaque;
 
+			// Check if block above is water (to determine if this is a surface block for waves)
+			Voxel::BlockID blockAbove = (y + 1 < Chunk::CHUNK_SIZE_Y) 
+				? chunk.getBlock(x, y + 1, z) 
+				: Voxel::BlockID::Air;
+			const bool isWaterSurface = (id == Voxel::BlockID::Water) && (blockAbove != Voxel::BlockID::Water);
+
 			// Compute per-corner AO (baked into the light values).
 			float lights[4];
 			computeFaceAO(chunk, neighbours, x, y, z, fi, lights);
-			emitFace(target, x, y, z, fdir, layer, lights);
+
+			// Sample sky light at each corner of the face
+			// For corners outside chunk bounds, use the center block's light to avoid dark edges
+			float skyLights[4];
+			uint8_t centerLight = chunk.getSkyLight(x, y, z);
+			for (int i = 0; i < 4; ++i)
+			{
+				const FaceCorner& corner = kFaceQuads[fi][i];
+				const int cx = x + static_cast<int>(corner.dx);
+				const int cy = y + static_cast<int>(corner.dy);
+				const int cz = z + static_cast<int>(corner.dz);
+
+				// If corner is out of bounds, use center block's light
+				if (Chunk::Chunk::inBounds(cx, cy, cz))
+					skyLights[i] = static_cast<float>(chunk.getSkyLight(cx, cy, cz));
+				else
+					skyLights[i] = static_cast<float>(centerLight);
+			}
+
+			emitFace(target, x, y, z, fdir, layer, lights, skyLights, isWaterSurface);
 		}
 	}
 
@@ -812,6 +862,8 @@ static ChunkMesh buildGreedyLOD(const Chunk::Chunk& chunk,
 				quad[i].v = corners[i].v * blockHeight;       // Scale V to cover column height
 				quad[i].texLayer = static_cast<float>(layer);
 				quad[i].light = baseLight;  // No AO for LOD
+				quad[i].faceType = 0.0f;    // No waves for LOD
+				quad[i].skyLight = 15.0f;   // Default full brightness for LOD (distant chunks)
 			}
 
 			// Emit two triangles

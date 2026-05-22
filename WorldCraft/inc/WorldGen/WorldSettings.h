@@ -36,6 +36,11 @@ namespace WorldGen
 		bool  enableTrees      = true;
 		float treeDensity      = 0.02f;    // 0-1, probability per suitable block
 
+		// Water simulation
+		bool  enableWaterFlow  = true;     // Enable water spreading simulation
+		bool  enableWaterWaves = true;     // Enable visual wave effect on water surfaces
+		float waterFlowRate    = 0.5f;     // Ticks per second for water updates (0.5 = every 2 seconds)
+
 		// World name (for future save/load)
 		char  worldName[64]    = "New World";
 

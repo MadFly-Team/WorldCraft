@@ -4,11 +4,14 @@
 // Include header-only here (no STB_PERLIN_IMPLEMENTATION).
 #include <stb_perlin.h>
 
+#include <Voxel/BlockRegistry.h>
+
 #include <cmath>
 #include <cstdlib>
 #include <unordered_set>
 #include <utility>
 #include <cstdio>
+#include <vector>
 
 namespace WorldGen
 {
@@ -638,7 +641,8 @@ void TerrainGen::generate(Chunk::Chunk& chunk, int chunkX, int chunkZ) const
 
 			// Water fill: surface depressions above terrain, below sea level.
 			// Don't fill caves - only fill surface depressions
-			if (block == Voxel::BlockID::Air && ly > h && ly <= kSeaLevel)
+			// Fill 1 block below sea level so waves stay below land surface
+			if (block == Voxel::BlockID::Air && ly > h && ly < kSeaLevel)
 			{
 				block = Voxel::BlockID::Water;
 			}
@@ -732,6 +736,117 @@ void TerrainGen::generate(Chunk::Chunk& chunk, int chunkX, int chunkZ) const
 				}
 			}
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sky light propagation - improved with horizontal spreading
+	// ---------------------------------------------------------------------------
+	const auto& blockReg = Voxel::BlockRegistry::get();
+
+	// Step 1: Initialize sky columns (direct sunlight from above)
+	for (int lx = 0; lx < Chunk::CHUNK_SIZE_X; ++lx)
+	for (int lz = 0; lz < Chunk::CHUNK_SIZE_Z; ++lz)
+	{
+		uint8_t lightLevel = 15;  // Start at max sky light at the top
+
+		// Scan from top to bottom
+		for (int ly = Chunk::CHUNK_SIZE_Y - 1; ly >= 0; --ly)
+		{
+			Voxel::BlockID block = chunk.getBlock(lx, ly, lz);
+
+			// Set the current light level
+			chunk.setSkyLight(lx, ly, lz, lightLevel);
+
+			// Check if this block blocks light
+			if (block != Voxel::BlockID::Air)
+			{
+				const auto& props = blockReg.propertiesOf(block);
+				if (!props.isTransparent)
+				{
+					// Opaque block - stop light from going below
+					lightLevel = 0;
+				}
+				else
+				{
+					// Transparent block - reduce light slightly
+					if (lightLevel > 0)
+						lightLevel = static_cast<uint8_t>(lightLevel > 1 ? lightLevel - 1 : 0);
+				}
+			}
+		}
+	}
+
+	// Step 2: Horizontal light propagation (flood-fill within chunk)
+	// This spreads light into caves and around corners
+	// Use a queue-based flood fill for better light distribution
+	struct LightNode { int x, y, z; };
+	std::vector<LightNode> lightQueue;
+
+	// Seed the queue with all lit blocks
+	for (int ly = 0; ly < Chunk::CHUNK_SIZE_Y; ++ly)
+	for (int lx = 0; lx < Chunk::CHUNK_SIZE_X; ++lx)
+	for (int lz = 0; lz < Chunk::CHUNK_SIZE_Z; ++lz)
+	{
+		if (chunk.getSkyLight(lx, ly, lz) > 0)
+			lightQueue.push_back({lx, ly, lz});
+	}
+
+	// Process queue: spread light from bright to dim areas
+	// Multiple passes ensure light reaches far enough
+	for (int pass = 0; pass < 5; ++pass)  // 5 full propagation passes (was 3)
+	{
+		std::vector<LightNode> nextQueue;
+
+		for (const auto& node : lightQueue)
+		{
+			uint8_t currentLight = chunk.getSkyLight(node.x, node.y, node.z);
+			if (currentLight <= 1) continue;
+
+			// Check all 6 neighbors
+			const int dx[] = {1, -1, 0, 0, 0, 0};
+			const int dy[] = {0, 0, 1, -1, 0, 0};
+			const int dz[] = {0, 0, 0, 0, 1, -1};
+
+			for (int dir = 0; dir < 6; ++dir)
+			{
+				int nx = node.x + dx[dir];
+				int ny = node.y + dy[dir];
+				int nz = node.z + dz[dir];
+
+				// Check bounds
+				if (!Chunk::Chunk::inBounds(nx, ny, nz))
+					continue;
+
+				Voxel::BlockID neighborBlock = chunk.getBlock(nx, ny, nz);
+
+				// Can only spread light through air or transparent blocks
+				if (neighborBlock != Voxel::BlockID::Air)
+				{
+					const auto& props = blockReg.propertiesOf(neighborBlock);
+					if (!props.isTransparent)
+						continue;  // Opaque block blocks light
+				}
+
+				uint8_t neighborLight = chunk.getSkyLight(nx, ny, nz);
+				// Very slow decay: only lose 1 light level every 3 blocks (was 2)
+				uint8_t newLight;
+				if (currentLight > 3)
+					newLight = currentLight - 1;
+				else if (currentLight > 1)
+					newLight = 2;  // Keep at 2 for a while
+				else
+					newLight = 1;
+
+				// Update neighbor if our light is brighter
+				if (newLight > neighborLight)
+				{
+					chunk.setSkyLight(nx, ny, nz, newLight);
+					nextQueue.push_back({nx, ny, nz});
+				}
+			}
+		}
+
+		lightQueue = std::move(nextQueue);
 	}
 }
 

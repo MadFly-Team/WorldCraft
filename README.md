@@ -1,6 +1,8 @@
 # WorldCraft
 
-A high-performance voxel-based world exploration game built with modern C++20 and OpenGL, featuring procedurally generated terrain, dynamic cave systems, and multi-level LOD rendering.
+A high-performance voxel-based world exploration game built with modern C++20 and OpenGL, featuring procedurally generated terrain, dynamic cave systems, multi-level LOD rendering, and interactive block manipulation.
+
+![WorldCraft Screenshot](docs/images/worldcraft1.jpg)
 
 ---
 
@@ -8,6 +10,21 @@ A high-performance voxel-based world exploration game built with modern C++20 an
 
 **Version:** Pre-Alpha Development Build  
 **Status:** Core systems functional, actively developed
+
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/images/worldcraft2.jpg" alt="Terrain View" width="400"/></td>
+    <td><img src="docs/images/worldcraft3.jpg" alt="Cave System" width="400"/></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/worldcraft4.jpg" alt="Water Features" width="400"/></td>
+    <td><img src="docs/images/worldcraft5.jpg" alt="Sky and Clouds" width="400"/></td>
+  </tr>
+</table>
+
+---
 
 ### ✨ Implemented Features
 
@@ -27,9 +44,40 @@ A high-performance voxel-based world exploration game built with modern C++20 an
   - Spawn between configurable depth ranges (default: Y 10-50)
   - Organic noise-based chamber formation
   - Natural ore and mineral deposits
-- **Dynamic Cave Lighting** - Depth-based progressive darkening
-  - Exponential light falloff below Y=60
-  - Atmospheric exploration requiring light sources
+- **Advanced Cave Lighting System** - Realistic sky-light propagation
+  - Sky light floods down from surface through transparent blocks
+  - Natural darkening in caves and underground areas
+  - Smooth lighting transitions with multi-pass propagation
+  - Per-block light storage with 16 brightness levels
+
+#### Interactive Block System
+- **Block Removal** - Point and click to break blocks
+  - Visual targeting with wireframe highlight
+  - Ray-cast selection system
+  - Automatic chunk remeshing after block changes
+  - Neighbor chunk updates for seamless edges
+- **Indestructible Bedrock Layer** - Bottom layer at Y=0 cannot be removed
+- **Torch Lighting** - Dynamic light sources
+  - Toggleable character torch (press T)
+  - Torch block type with glowing texture
+  - Adjustable brightness and falloff
+  - Smooth lighting integration with sky-light system
+
+#### Water System
+- **Dynamic Water Simulation** - Realistic water flow mechanics
+  - Configurable flow rate and update range
+  - Water spreads to adjacent air blocks
+  - Falls downward with gravity
+  - Toggleable in settings dialog
+- **Water Wave System** - Animated water surfaces
+  - Vertex displacement shader for realistic waves
+  - Multiple wave layers with different frequencies
+  - Toggleable via settings for performance
+  - Edge-aware: no wave displacement on water block sides
+- **Underwater Rendering** - Full underwater view effects
+  - Blue-tinted fog when camera submerged
+  - Smooth fog transitions
+  - Proper rendering of water surface from below
 
 #### Rendering System
 - **5-Level LOD (Level of Detail) System**
@@ -38,12 +86,17 @@ A high-performance voxel-based world exploration game built with modern C++20 an
   - Smooth transitions between detail levels
   - Optimized chunk meshing with greedy mesh algorithm
 - **Advanced Visual Effects**
-  - Distance-based fog and atmospheric haze
+  - Dynamic day/night cycle with time-of-day system
+  - Procedural sky with sun, moon, and rotating star field
+  - **Minecraft-style clouds** - Blocky, drifting clouds with day/night visibility
+  - Zenith and horizon color gradients that change with time of day
+  - Dawn/dusk orange horizon blush effect
+  - Distance-based fog matching sky colors
   - Render-distance aware fog blending
-  - Horizon color matching at dawn/dusk
   - Underwater rendering with caustics and fog
   - Ambient occlusion (AO) baking for realistic shadows
   - Gamma-corrected lighting (1/1.8 power curve)
+  - Soft lighting curves for natural cave darkness
 
 #### Chunk System
 - **Infinite World Streaming**
@@ -68,10 +121,14 @@ A high-performance voxel-based world exploration game built with modern C++20 an
   - World coordinates (X, Y, Z)
   - Current camera mode indicator
   - DPI-aware ImGui overlay
-- **Settings Dialog** (planned expansion)
-  - World generation parameters
-  - Cave system configuration
-  - Visual effect toggles
+- **Settings Dialog** - Press F1 to open
+  - World generation parameters (amplitude, scale, sea level)
+  - Cave system configuration (rarity, size, depth ranges)
+  - Visual effect toggles (water flow, waves, torch light)
+  - Water flow rate adjustment
+  - Render distance control (8-40+ chunks)
+  - World preset selection (Default, Flat, Mountainous, Islands, Cave World)
+  - Real-time settings updates
 
 ---
 
@@ -117,8 +174,9 @@ All ore blocks feature stone base with colored mineral veins.
 
 | Block | Type | Side Texture | Top Texture | Description |
 |-------|------|--------------|-------------|-------------|
-| **Water** | Transparent | Uniform | Uniform | Semi-transparent animated water |
+| **Water** | Transparent | Uniform | Uniform | Semi-transparent animated water with wave system |
 | **Obsidian** | Solid | Uniform | Uniform | Dark purple-black volcanic glass |
+| **Torch** | Transparent | Uniform | Uniform | Light source block with glowing texture |
 
 ### Variant Blocks
 
@@ -180,6 +238,9 @@ Enhanced cave generation for underground exploration.
 - **LOD Meshing:** Multi-level detail generation with interior-biased sampling
 - **Noise Generation:** STB Perlin with torus-domain seamless tiling
 - **Collision:** AABB-based player collision with swept volume testing
+- **Lighting:** Sky-light propagation system with 16 brightness levels
+- **Water Simulation:** Queue-based spreading with gravity and configurable flow
+- **Ray-Casting:** Block targeting for interaction and removal
 
 ### Performance
 - **Target Frame Rate:** 60+ FPS
@@ -204,16 +265,20 @@ Enhanced cave generation for underground exploration.
 - **Space** - Move up
 - **Left Shift** - Move down
 - **Mouse** - Look around
+- **Right Click** - Remove block (visual targeting with wireframe)
 - **C** - Switch to Character Camera
+- **T** - Toggle character torch light
 
 ### Character Camera Mode
 - **W/A/S/D** - Walk forward/left/back/right
 - **Space** - Jump
 - **Mouse** - Look around
+- **Right Click** - Remove block (visual targeting with wireframe)
 - **C** - Switch to Fly Camera
+- **T** - Toggle character torch light
 
 ### UI
-- **F1** - Toggle settings dialog (planned)
+- **F1** - Toggle settings dialog
 - **ESC** - Exit application
 
 ---
@@ -263,12 +328,16 @@ Additional documentation can be found in the `docs/` directory:
 ## 🚀 Planned Features
 
 ### Short Term
-- [ ] Block breaking and placement mechanics
+- [x] Block breaking mechanics with visual targeting
+- [x] Torch placement and lighting system
+- [x] Skybox with day/night cycle
+- [x] Dynamic sun/moon position and star rotation
+- [x] Water flow simulation
+- [x] Settings dialog with runtime configuration
+- [ ] Block placement mechanics
 - [ ] Inventory system
-- [ ] Torch placement for cave lighting
 - [ ] Save/load world data
-- [ ] Skybox with day/night cycle
-- [ ] Dynamic sun position and lighting
+- [ ] More torch types and light colors
 
 ### Medium Term
 - [ ] Crafting system
@@ -276,13 +345,14 @@ Additional documentation can be found in the `docs/` directory:
 - [ ] Structure generation (villages, dungeons)
 - [ ] Mob spawning and AI
 - [ ] Sound effects and ambient audio
-- [ ] Improved water physics
+- [ ] Improved water physics (finite water)
+- [ ] Weather systems (rain, snow)
 
 ### Long Term
 - [ ] Multiplayer support
 - [ ] Mod API
 - [ ] Advanced weather systems
-- [ ] Shader-based lighting (dynamic shadows)
+- [ ] Shader-based dynamic shadows
 - [ ] Chunk LOD with geometry clipmaps
 - [ ] Cross-platform support (Linux, macOS)
 
@@ -330,5 +400,5 @@ WorldCraft draws inspiration from voxel games like Minecraft while exploring mod
 
 ---
 
-*Last Updated: May 2026*  
+*Last Updated: January 2025*  
 *Built with ❤️ using C++20 and OpenGL*

@@ -1,4 +1,4 @@
-﻿#include <Voxel/BlockRegistry.h>
+#include <Voxel/BlockRegistry.h>
 #include <Texture/BlockTextures.h>
 
 namespace Voxel
@@ -192,6 +192,13 @@ BlockRegistry::BlockRegistry()
 		auto& p = m_table[static_cast<size_t>(BlockID::Mushroom)];
 		p.isSolid = true; p.isTransparent = false; p.name = "Mushroom";
 		setAllFaces(p, Texture::LAYER_MUSHROOM);
+	}
+
+	// Torch - light source block (non-solid, transparent for placement)
+	{
+		auto& p = m_table[static_cast<size_t>(BlockID::Torch)];
+		p.isSolid = false; p.isTransparent = true; p.name = "Torch";
+		setAllFaces(p, Texture::LAYER_TORCH);
 	}
 }
 

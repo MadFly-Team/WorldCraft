@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <WorldCraft.h>
 #include <cstdint>
@@ -71,8 +71,9 @@ inline constexpr int LAYER_ROCK_8      = 43;
 
 // --- Surface decorations ---
 inline constexpr int LAYER_MUSHROOM    = 44;
+inline constexpr int LAYER_TORCH       = 45;
 
-inline constexpr int TOTAL_LAYERS      = 45;
+inline constexpr int TOTAL_LAYERS      = 46;
 
 // Resolution of every texture layer (matches Minecraft classic).
 inline constexpr int TEX_SIZE = 16;
@@ -170,6 +171,7 @@ static void genRock8(PixelBuf pixels);
 
 // --- Surface decorations ---
 static void genMushroom(PixelBuf pixels);
+static void genTorch(PixelBuf pixels);
 
 private:
 GLuint m_handle = 0;

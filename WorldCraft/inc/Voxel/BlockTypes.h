@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 
@@ -57,6 +57,7 @@ Rock8      = 34,
 
 // --- Surface decorations (objects) ---
 Mushroom   = 35,
+Torch      = 36,  // Light source
 
 COUNT
 };

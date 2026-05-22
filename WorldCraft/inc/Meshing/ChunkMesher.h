@@ -83,11 +83,14 @@ namespace Meshing
 		// lights[4] holds per-corner AO-baked brightness values (corner order
 		// matches kFaceQuads[face][0..3]).  The quad winding may be flipped to
 		// keep the AO gradient consistent across the diagonal.
+		// skyLights[4] holds per-corner sky light levels (0-15).
 		static void emitFace(std::vector<ChunkVertex>& out,
 							 int x, int y, int z,
 							 Voxel::FaceDir face,
 							 int texLayer,
-							 const float lights[4]);
+							 const float lights[4],
+							 const float skyLights[4],
+							 bool isWaterSurface = false);
 	};
 
 } // namespace Meshing

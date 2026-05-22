@@ -43,6 +43,7 @@ namespace UI
 		void renderCaveSettings();
 		void renderOreSettings();
 		void renderTreeSettings();
+		void renderWaterSettings();
 		void renderGenerateButton();
 
 		WorldGen::WorldSettings m_settings;

@@ -27,6 +27,12 @@ namespace Chunk
 		// Marks the chunk dirty on success.
 		void setBlock(int x, int y, int z, Voxel::BlockID id);
 
+		// Get sky light level at local coordinates (0-15, returns 0 for out-of-bounds)
+		uint8_t getSkyLight(int x, int y, int z) const;
+
+		// Set sky light level at local coordinates (0-15, ignores out-of-bounds)
+		void setSkyLight(int x, int y, int z, uint8_t level);
+
 		// Bounds check.
 		static bool inBounds(int x, int y, int z)
 		{
@@ -46,6 +52,9 @@ namespace Chunk
 		static int index(int x, int y, int z);
 
 		std::array<Voxel::BlockID, CHUNK_VOLUME> m_blocks;
+		// Sky light data: 4 bits per block, packed as 2 blocks per byte
+		// Light level 0-15, where 15 = full sunlight, 0 = complete darkness
+		std::array<uint8_t, CHUNK_VOLUME / 2> m_skyLight;
 		bool m_dirty = true;
 	};
 
