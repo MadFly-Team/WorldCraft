@@ -1,6 +1,3 @@
-[submodule "doctest"]
-	path = doctest
-	url = https://github.com/doctest/doctest.git
 [submodule "third_party/glfw"]
 	path = third_party/glfw
 	url = https://github.com/glfw/glfw.git
@@ -19,3 +16,10 @@
 [submodule "third_party/imgui"]
 	path = third_party/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "doctest"]
+	path = doctest
+	url = https://github.com/doctest/doctest.git
+[submodule "third_party/SDL2"]
+	path = third_party/SDL2
+	url = https://github.com/libsdl-org/SDL.git
+	branch = SDL2
