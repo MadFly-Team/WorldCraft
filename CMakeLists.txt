@@ -29,6 +29,13 @@ ExternalProject_Add(
 set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
+# Fix for Visual Studio CMake integration: force header detection
+# MSVC has these headers, but check_include_file may fail in multi-config generators
+if(MSVC)
+  set(HAVE_STDINT_H 1 CACHE INTERNAL "Have stdint.h")
+  set(HAVE_DINPUT_H 1 CACHE INTERNAL "Have dinput.h")
+  set(HAVE_XINPUT_H 1 CACHE INTERNAL "Have xinput.h")
+endif()
 add_subdirectory(third_party/SDL2)
 
 # --- GLM (CMake project, header-only) ---
