@@ -12,13 +12,11 @@
     "\\third_party",
     "\\third_party\\imgui",
     "\\third_party\\imgui\\examples",
-    "\\third_party\\imgui\\examples\\example_win32_directx9",
+    "\\third_party\\SDL2",
     "\\third_party\\SDL2\\VisualC",
     "\\third_party\\SDL2\\VisualC\\tests",
-    "\\third_party\\SDL2\\VisualC\\tests\\testjoystick",
-    "\\third_party\\SDL2\\VisualC\\tests\\testrumble",
+    "\\third_party\\SDL2\\VisualC\\tests\\checkkeys",
     "\\WorldCraft"
   ],
-  "SelectedNode": "\\CMakeLists.txt",
   "PreviewInSolutionExplorer": false
 }
