@@ -140,6 +140,9 @@ void update(const glm::vec3& cameraPos);
 	Chunk* getChunk(int chunkX, int chunkZ);
 	const Chunk* getChunk(int chunkX, int chunkZ) const;
 
+	// Get the number of currently loaded chunks (for diagnostics)
+	size_t getChunkCount() const { return m_chunks.size(); }
+
 private:
 	WorldGen::WorldSettings m_settings;
 	int  m_renderDist;

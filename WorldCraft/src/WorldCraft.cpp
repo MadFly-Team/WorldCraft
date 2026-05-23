@@ -840,7 +840,19 @@ int main()
 
         // Load/evict chunks around the camera.
         if (world)
+        {
             world->update(activePos);
+            
+            // Quick diagnostic - print chunk count every 2 seconds
+            static Uint64 lastPrintTime = 0;
+            Uint64 currentTime = SDL_GetTicks64();
+            if (currentTime - lastPrintTime > 2000)
+            {
+                lastPrintTime = currentTime;
+                printf("Active chunks: %zu, Camera: (%.1f, %.1f, %.1f)\n",
+                       world->getChunkCount(), activePos.x, activePos.y, activePos.z);
+            }
+        }
 
         // Viewport size (may change)
         int fbW, fbH;

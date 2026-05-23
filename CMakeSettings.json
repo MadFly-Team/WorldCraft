@@ -7,10 +7,17 @@
       "buildRoot": "${projectDir}\\out\\build\\${name}",
       "installRoot": "${projectDir}\\out\\install\\${name}",
       "cmakeCommandArgs": "",
+      "cmakeToolchain": "${projectDir}\\cmake\\toolchain-msvc-x64.cmake",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
       "inheritEnvironments": [ "msvc_x64_x64" ],
-      "variables": []
+      "variables": [
+        {
+          "name": "SDL_LIBC",
+          "value": "ON",
+          "type": "BOOL"
+        }
+      ]
     },
     {
       "name": "x64-Release",
@@ -19,10 +26,17 @@
       "buildRoot": "${projectDir}\\out\\build\\${name}",
       "installRoot": "${projectDir}\\out\\install\\${name}",
       "cmakeCommandArgs": "",
+      "cmakeToolchain": "${projectDir}\\cmake\\toolchain-msvc-x64.cmake",
       "buildCommandArgs": "",
       "ctestCommandArgs": "",
       "inheritEnvironments": [ "msvc_x64_x64" ],
-      "variables": []
+      "variables": [
+        {
+          "name": "SDL_LIBC",
+          "value": "ON",
+          "type": "BOOL"
+        }
+      ]
     }
   ]
 }

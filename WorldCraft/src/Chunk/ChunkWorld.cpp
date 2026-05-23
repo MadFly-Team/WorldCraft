@@ -146,13 +146,28 @@ ChunkWorld::ChunkWorld(const WorldGen::WorldSettings& settings)
 
 ChunkWorld::~ChunkWorld()
 {
-{
-std::lock_guard<std::mutex> lk(m_workMutex);
-m_stopWorkers = true;
-}
-m_workCV.notify_all();
-for (auto& t : m_workers)
-if (t.joinable()) t.join();
+	// Signal workers to stop
+	{
+		std::lock_guard<std::mutex> lk(m_workMutex);
+		m_stopWorkers = true;
+	}
+	
+	// Wake all workers from work queue wait
+	m_workCV.notify_all();
+	
+	// CRITICAL FIX: If workers are paused, wake them so they can exit cleanly
+	{
+		std::lock_guard<std::mutex> lk(m_pauseMutex);
+		m_pauseRequested.store(false);
+	}
+	m_pauseCV.notify_all();
+	
+	// Now safely wait for all workers to finish
+	for (auto& t : m_workers)
+	{
+		if (t.joinable())
+			t.join();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -229,119 +244,128 @@ void ChunkWorld::workerLoop()
 	{
 		WorkItem item{};
 
-// --- Pause checkpoint ---------------------------------------------------
-// Reached between tasks.  If the main thread has requested a pause we
-// count ourselves, signal it, and sleep until resumeWorkers() is called.
-{
-	std::unique_lock<std::mutex> plk(m_pauseMutex);
-	if (m_pauseRequested.load())
-	{
-		++m_pausedWorkerCount;
-		m_allPausedCV.notify_one();
-		m_pauseCV.wait(plk, [this] {
-			return !m_pauseRequested.load() || m_stopWorkers.load();
-		});
-		--m_pausedWorkerCount;
-		if (m_stopWorkers.load()) return;
+		// --- Pause checkpoint ---
+		{
+			std::unique_lock<std::mutex> plk(m_pauseMutex);
+			if (m_pauseRequested.load())
+			{
+				++m_pausedWorkerCount;
+				m_allPausedCV.notify_one();
+				m_pauseCV.wait(plk, [this] {
+					return !m_pauseRequested.load() || m_stopWorkers.load();
+				});
+				--m_pausedWorkerCount;
+				if (m_stopWorkers.load()) return;
+			}
+		}
+
+		// Acquire work item from queue
+		{
+			std::unique_lock<std::mutex> lk(m_workMutex);
+			m_workCV.wait(lk, [this] {
+				return m_stopWorkers.load() || !m_workQueue.empty() || m_pauseRequested.load();
+			});
+			
+			if (m_stopWorkers && m_workQueue.empty()) return;
+			if (m_pauseRequested.load()) continue;
+			
+			if (m_workQueue.empty())
+			{
+				continue;
+			}
+			
+			item = m_workQueue.front();
+			m_workQueue.pop();
+		} // ← CRITICAL: Lock released here before processing the work item!
+
+		if (item.phase == WorkPhase::Generate)
+		{
+			auto genStart = std::chrono::high_resolution_clock::now();
+
+			// Generate voxel data and store in the shared cache.
+			auto chunkPtr = std::make_shared<Chunk>();
+			terrainGen.generate(*chunkPtr, item.coord.x, item.coord.z);
+
+			auto genEnd = std::chrono::high_resolution_clock::now();
+			auto genDuration = std::chrono::duration_cast<std::chrono::milliseconds>(genEnd - genStart).count();
+
+			{
+				std::unique_lock<std::shared_mutex> lk(m_voxelMutex);
+				m_voxelCache[item.coord] = chunkPtr;
+			}
+
+			// Remove from in-flight BEFORE trying to enqueue mesh jobs
+			{
+				std::lock_guard<std::mutex> lk(m_inFlightMutex);
+				m_inFlight.erase(item.coord);
+			}
+
+			// Try to start mesh jobs for this chunk and its four neighbours
+			const ChunkCoord neighbours[5] = {
+				item.coord,
+				{ item.coord.x + 1, item.coord.z },
+				{ item.coord.x - 1, item.coord.z },
+				{ item.coord.x,     item.coord.z + 1 },
+				{ item.coord.x,     item.coord.z - 1 },
+			};
+			for (const auto& nc : neighbours)
+				tryEnqueueMesh(nc);
+		}
+		else // WorkPhase::Mesh
+		{
+			// Gather chunk + neighbours from the voxel cache.
+			std::shared_ptr<Chunk> self;
+			Meshing::ChunkNeighbours nbrs;
+
+			{
+				std::shared_lock<std::shared_mutex> lk(m_voxelMutex);
+
+				auto it = m_voxelCache.find(item.coord);
+				if (it == m_voxelCache.end())
+				{
+					// Should not happen, but guard against it.
+					std::lock_guard<std::mutex> il(m_inFlightMutex);
+					m_inFlight.erase(item.coord);
+					continue;
+				}
+				self = it->second;
+
+				auto find = [&](ChunkCoord c) -> std::shared_ptr<const Chunk> {
+					auto jt = m_voxelCache.find(c);
+					return (jt != m_voxelCache.end()) ? jt->second : nullptr;
+				};
+
+				nbrs.posX = find({ item.coord.x + 1, item.coord.z });
+				nbrs.negX = find({ item.coord.x - 1, item.coord.z });
+				nbrs.posZ = find({ item.coord.x,     item.coord.z + 1 });
+				nbrs.negZ = find({ item.coord.x,     item.coord.z - 1 });
+			}
+
+			auto entry = std::make_unique<ChunkEntry>();
+			entry->coord = item.coord;
+			entry->chunk = *self;
+			entry->worldOffset = glm::vec3(
+				static_cast<float>(item.coord.x * CHUNK_SIZE_X),
+				0.0f,
+				static_cast<float>(item.coord.z * CHUNK_SIZE_Z));
+			entry->lodMesh = Meshing::ChunkMesher::buildLOD(*self, nbrs);
+
+			{
+				std::lock_guard<std::mutex> lk(m_readyMutex);
+				m_readyQueue.push(std::move(entry));
+			}
+
+			{
+				std::lock_guard<std::mutex> lk(m_pendingUploadMutex);
+				m_pendingUploadSet.insert(item.coord);
+			}
+
+			{
+				std::lock_guard<std::mutex> lk(m_inFlightMutex);
+				m_inFlight.erase(item.coord);
+			}
+		}
 	}
-}
-
-{
-std::unique_lock<std::mutex> lk(m_workMutex);
-m_workCV.wait(lk, [this] {
-	return m_stopWorkers.load() || !m_workQueue.empty() || m_pauseRequested.load();
-});
-if (m_stopWorkers && m_workQueue.empty()) return;
-if (m_pauseRequested.load()) continue; // go back to pause checkpoint
-item = m_workQueue.front();
-m_workQueue.pop();
-}
-
-if (item.phase == WorkPhase::Generate)
-{
-// Generate voxel data and store in the shared cache.
-auto chunkPtr = std::make_shared<Chunk>();
-terrainGen.generate(*chunkPtr, item.coord.x, item.coord.z);
-
-{
-	std::unique_lock<std::shared_mutex> lk(m_voxelMutex);
-	m_voxelCache[item.coord] = chunkPtr;
-}
-
-// Remove from in-flight BEFORE trying to enqueue mesh jobs,
-// otherwise tryEnqueueMesh will see this coord as in-flight and skip it.
-{
-	std::lock_guard<std::mutex> lk(m_inFlightMutex);
-	m_inFlight.erase(item.coord);
-}
-
-// Try to start mesh jobs for this chunk and its four neighbours —
-// any of them may now have all required voxel data available.
-const ChunkCoord neighbours[5] = {
-item.coord,
-{ item.coord.x + 1, item.coord.z },
-{ item.coord.x - 1, item.coord.z },
-{ item.coord.x,     item.coord.z + 1 },
-{ item.coord.x,     item.coord.z - 1 },
-};
-for (const auto& nc : neighbours)
-tryEnqueueMesh(nc);
-}
-else // WorkPhase::Mesh
-{
-// Gather chunk + neighbours from the voxel cache.
-std::shared_ptr<Chunk> self;
-Meshing::ChunkNeighbours nbrs;
-
-{
-std::shared_lock<std::shared_mutex> lk(m_voxelMutex);
-
-auto it = m_voxelCache.find(item.coord);
-if (it == m_voxelCache.end())
-{
-// Should not happen, but guard against it.
-std::lock_guard<std::mutex> il(m_inFlightMutex);
-m_inFlight.erase(item.coord);
-continue;
-}
-self = it->second;
-
-auto find = [&](ChunkCoord c) -> std::shared_ptr<const Chunk> {
-	auto jt = m_voxelCache.find(c);
-	return (jt != m_voxelCache.end()) ? jt->second : nullptr;
-};
-
-nbrs.posX = find({ item.coord.x + 1, item.coord.z });
-nbrs.negX = find({ item.coord.x - 1, item.coord.z });
-nbrs.posZ = find({ item.coord.x,     item.coord.z + 1 });
-nbrs.negZ = find({ item.coord.x,     item.coord.z - 1 });
-}
-
-auto entry = std::make_unique<ChunkEntry>();
-entry->coord = item.coord;
-entry->chunk = *self;
-entry->worldOffset = glm::vec3(
-	static_cast<float>(item.coord.x * CHUNK_SIZE_X),
-	0.0f,
-	static_cast<float>(item.coord.z * CHUNK_SIZE_Z));
-entry->lodMesh = Meshing::ChunkMesher::buildLOD(*self, nbrs);
-
-{
-std::lock_guard<std::mutex> lk(m_readyMutex);
-m_readyQueue.push(std::move(entry));
-}
-
-{
-	std::lock_guard<std::mutex> lk(m_pendingUploadMutex);
-	m_pendingUploadSet.insert(item.coord);
-}
-
-{
-std::lock_guard<std::mutex> lk(m_inFlightMutex);
-m_inFlight.erase(item.coord);
-}
-}
-}
 }
 
 // ---------------------------------------------------------------------------
@@ -379,13 +403,33 @@ void ChunkWorld::enqueueGenerate(const ChunkCoord& coord)
 	}
 	else
 	{
-		std::lock_guard<std::mutex> lk(m_inFlightMutex);
-		if (m_inFlight.count(coord)) return;  // re-check after gap
-		m_inFlight.insert(coord);
+		// CRITICAL FIX: Don't enqueue if work queue is getting too large
+		// This prevents the queue from being flooded with Generate jobs
+		// and allows Mesh jobs to be processed
+		size_t queueSize = 0;
+		{
+			std::lock_guard<std::mutex> wl(m_workMutex);
+			queueSize = m_workQueue.size();
+		}
+		
+		// If queue has more than 50 items, skip for now
+		if (queueSize > 50)
+		{
+			return;
+		}
+		
+		// Mark as in-flight and enqueue the work
+		{
+			std::lock_guard<std::mutex> lk(m_inFlightMutex);
+			if (m_inFlight.count(coord)) return;  // re-check
+			m_inFlight.insert(coord);
+		}
 
-		std::lock_guard<std::mutex> wl(m_workMutex);
-		m_workQueue.push({ coord, WorkPhase::Generate });
-		m_workCV.notify_one();
+		{
+			std::lock_guard<std::mutex> wl(m_workMutex);
+			m_workQueue.push({ coord, WorkPhase::Generate });
+			m_workCV.notify_one();
+		}
 	}
 }
 
@@ -404,13 +448,19 @@ void ChunkWorld::tryEnqueueMesh(const ChunkCoord& coord)
 	}
 
 	// All five voxel chunks (self + 4 neighbours) must exist.
+	bool hasAllNeighbours = false;
 	{
 		std::shared_lock<std::shared_mutex> lk(m_voxelMutex);
-		if (!m_voxelCache.count(coord))                          return;
-		if (!m_voxelCache.count({ coord.x + 1, coord.z }))      return;
-		if (!m_voxelCache.count({ coord.x - 1, coord.z }))      return;
-		if (!m_voxelCache.count({ coord.x,     coord.z + 1 }))  return;
-		if (!m_voxelCache.count({ coord.x,     coord.z - 1 }))  return;
+		hasAllNeighbours = m_voxelCache.count(coord) > 0 &&
+		                   m_voxelCache.count({ coord.x + 1, coord.z }) > 0 &&
+		                   m_voxelCache.count({ coord.x - 1, coord.z }) > 0 &&
+		                   m_voxelCache.count({ coord.x,     coord.z + 1 }) > 0 &&
+		                   m_voxelCache.count({ coord.x,     coord.z - 1 }) > 0;
+	}
+	
+	if (!hasAllNeighbours)
+	{
+		return;
 	}
 
 	// Avoid duplicate mesh jobs.
@@ -419,6 +469,7 @@ void ChunkWorld::tryEnqueueMesh(const ChunkCoord& coord)
 		if (m_inFlight.count(coord)) return;
 		m_inFlight.insert(coord);
 	}
+
 
 	{
 		std::lock_guard<std::mutex> lk(m_workMutex);
@@ -429,10 +480,19 @@ void ChunkWorld::tryEnqueueMesh(const ChunkCoord& coord)
 
 void ChunkWorld::drainReadyQueue()
 {
+	// DIAGNOSTIC: Print ready queue size occasionally
+	static int drainCallCount = 0;
+	bool shouldPrint = (++drainCallCount % 60 == 0);
+	
+	size_t queueSize = 0;
+	{
+		std::lock_guard<std::mutex> lk(m_readyMutex);
+		queueSize = m_readyQueue.size();
+	}
+	
 	// Limit both the number of uploads and the total time spent per frame.
-	// This prevents frame-rate hitches when many chunks become ready at once.
-	constexpr int kMaxUploadsPerFrame = 6;  // Balanced: enough to avoid holes, not so many to cause hitches
-	constexpr double kMaxUploadTimeMs = 3.0;  // Budget 3ms for uploads per frame (slightly more headroom)
+	constexpr int kMaxUploadsPerFrame = 6;
+	constexpr double kMaxUploadTimeMs = 3.0;
 
 	int uploaded = 0;
 	auto startTime = std::chrono::high_resolution_clock::now();
@@ -445,7 +505,7 @@ void ChunkWorld::drainReadyQueue()
 			auto now = std::chrono::high_resolution_clock::now();
 			double elapsedMs = std::chrono::duration<double, std::milli>(now - startTime).count();
 			if (elapsedMs > kMaxUploadTimeMs)
-				break;  // Exceeded time budget, defer remaining uploads to next frame
+				break;
 		}
 
 		std::unique_ptr<ChunkEntry> entry;
@@ -453,9 +513,6 @@ void ChunkWorld::drainReadyQueue()
 			std::lock_guard<std::mutex> lk(m_readyMutex);
 			if (m_readyQueue.empty()) break;
 
-			// Prioritize chunks closer to camera by sorting the queue.
-			// In practice we'll just take the front, but we could improve this
-			// by maintaining a priority queue sorted by distance.
 			entry = std::move(m_readyQueue.front());
 			m_readyQueue.pop();
 		}
@@ -470,12 +527,12 @@ void ChunkWorld::drainReadyQueue()
 		}
 
 		// Drop stale ready results for chunks that are no longer near the camera.
-		// This avoids uploading GPU resources for work the world has already moved past.
 		if (dx > m_renderDist + 1 || dz > m_renderDist + 1)
+		{
 			continue;
+		}
 
-		// If this chunk already exists, destroy the old mesh and replace it with the new one
-		// (this happens when a block is modified and the chunk is remeshed)
+		// If this chunk already exists, destroy old and replace
 		auto existingIt = m_chunks.find(c);
 		if (existingIt != m_chunks.end())
 		{
@@ -553,9 +610,17 @@ void ChunkWorld::update(const glm::vec3& cameraPos)
 {
 	const ChunkCoord camChunk = toChunkCoord(cameraPos);
 
-	if (!(camChunk == m_lastCamChunk))
+	// ALWAYS try to enqueue chunks around the camera, not just when moving
+	// This ensures chunks continue generating until the area is fully loaded
 	{
-		m_lastCamChunk = camChunk;
+		// DIAGNOSTIC: Print when we're about to generate chunks
+		static bool printedOnce = false;
+		if (!printedOnce)
+		{
+			printf("ChunkWorld::update - Camera at chunk (%d, %d), render distance: %d\n",
+			       camChunk.x, camChunk.z, m_renderDist);
+			printedOnce = true;
+		}
 
 		// Request one extra ring of generate jobs around the render distance so
 		// every rendered chunk has all four neighbours ready for meshing.
@@ -563,6 +628,14 @@ void ChunkWorld::update(const glm::vec3& cameraPos)
 		for (int dz = -genDist; dz <= genDist; ++dz)
 			for (int dx = -genDist; dx <= genDist; ++dx)
 				enqueueGenerate({ camChunk.x + dx, camChunk.z + dz });
+	}
+
+	// Update camera tracking only when it actually moves chunks
+	if (!(camChunk == m_lastCamChunk))
+	{
+		printf("ChunkWorld::update - Camera moved to chunk (%d, %d)\n",
+		       camChunk.x, camChunk.z);
+		m_lastCamChunk = camChunk;
 	}
 
 	// CRITICAL: Run eviction EVERY FRAME, not just when changing chunks!
