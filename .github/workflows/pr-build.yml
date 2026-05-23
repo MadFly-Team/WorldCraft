@@ -1,0 +1,101 @@
+name: WorldCraft Build
+
+on:
+  workflow_dispatch:
+
+  pull_request:
+    branches:
+      - develop
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'docs/images/**'
+
+  push:
+    branches:
+      - develop
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'docs/images/**'
+
+concurrency:
+  group: worldcraft-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show submodule status
+        shell: bash
+        run: |
+          git submodule status --recursive
+
+      - name: Validate required third-party directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_paths=(
+            "third_party/SDL2"
+            "third_party/glm"
+            "third_party/glad"
+            "third_party/imgui"
+          )
+
+          for path in "${required_paths[@]}"; do
+            if [ ! -d "$path" ]; then
+              echo "Missing required submodule directory: $path"
+              exit 1
+            fi
+          done
+
+      - name: Set up Visual Studio Developer Environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: 2022
+
+      - name: Verify MSVC environment
+        shell: cmd
+        run: |
+          echo Checking MSVC environment variables:
+          echo VCToolsInstallDir=%VCToolsInstallDir%
+          echo INCLUDE=%INCLUDE%
+          where cl.exe
+          where ninja.exe || echo Ninja not in PATH yet
+          cl.exe 2>&1 | findstr "Version"
+
+      - name: Set up CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Verify CMake and Ninja
+        shell: cmd
+        run: |
+          cmake --version
+          ninja --version
+
+      - name: Cache doctest external download
+        uses: actions/cache@v4
+        with:
+          path: out/build/x64-Release/doctest
+          key: ${{ runner.os }}-doctest-${{ hashFiles('CMakeLists.txt', 'WorldCraft/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-doctest-
+
+      - name: Configure WorldCraft (Release)
+        shell: cmd
+        run: |
+          cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe
+
+      - name: Build WorldCraft (Release)
+        shell: cmd
+        run: |
+          cmake --build out/build/x64-Release --config Release
