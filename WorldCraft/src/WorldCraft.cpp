@@ -11,11 +11,15 @@
 #include <World/WaterSimulation.h>
 #include <UI/ImGuiManager.h>
 #include <UI/SettingsDialog.h>
+#include <UI/LoadingScreen.h>
+#include <UI/ChaseCameraHUD.h>
+#include <UI/AnalogClock.h>
 #include <WorldGen/WorldSettings.h>
 #include <Utils/Raycast.h>
 #include <imgui.h>
 #include <thread>
 #include <chrono>
+#include <ctime>
 
 // ---------------------------------------------------------------------------
 // Window
@@ -574,15 +578,20 @@ int main()
     }
 
     UI::SettingsDialog settingsDialog;
-    settingsDialog.show();  // Show on startup
+    UI::LoadingScreen loadingScreen;
+    UI::ChaseCameraHUD chaseCameraHUD;
+    UI::AnalogClock analogClock;
+    bool isInitialLoadComplete = false;
 
     // ---- Camera System ------------------------------------------------------
     // Dual camera mode: Free-fly (noclip) and Character (walking/jumping)
-    enum class CameraMode { FreeFly, Character };
+    enum class CameraMode { FreeFly, Character, Chase };
     CameraMode cameraMode = CameraMode::FreeFly;
+    CameraMode previousCameraMode = CameraMode::FreeFly;  // For returning from Chase mode
 
     Renderer::FlyCamera flyCamera({ 8.0f, 100.0f, 8.0f });
     Renderer::CharacterCamera charCamera({ 8.0f, 100.0f, 8.0f });
+    Renderer::ChaseCamera chaseCamera({ 8.0f, 100.0f, 8.0f });
 
     flyCamera.init(window);
     charCamera.init(window);
@@ -606,11 +615,52 @@ int main()
         settingsDialog.hide();  // Close dialog after generating
     });
 
+    // Callback for when user clicks "Go To Position"
+    settingsDialog.setGoToPositionCallback([&](float x, float y, float z) {
+        // Get current camera position based on active mode
+        glm::vec3 currentPos;
+        if (cameraMode == CameraMode::FreeFly)
+            currentPos = flyCamera.position();
+        else if (cameraMode == CameraMode::Character)
+            currentPos = charCamera.position();
+        else
+            currentPos = chaseCamera.position();
+
+        // Initialize chase camera from current position
+        chaseCamera.setPosition(currentPos);
+        chaseCamera.setTarget(glm::vec3(x, y, z));
+
+        // Save previous mode to return to after chase completes
+        if (cameraMode != CameraMode::Chase)
+            previousCameraMode = cameraMode;
+
+        // Switch to chase mode
+        cameraMode = CameraMode::Chase;
+
+        // Show chase camera HUD
+        chaseCameraHUD.show();
+
+        // Close settings dialog
+        settingsDialog.hide();
+    });
+
     // ---- Day/night ---------------------------------------------------------
     // One full day = 480 real seconds (8 minutes).  Change kDayLength to taste.
     static constexpr float kDayLength  = 480.0f;
     // Start near dawn so the player immediately sees colour.
     float timeOfDay = 0.22f;  // 0=midnight, 0.25=dawn, 0.5=noon, 0.75=dusk
+    bool timePaused = false;
+    bool useLiveTime = false;
+
+    // Set time settings callback
+    settingsDialog.setTimeSettingsCallback([&](float newTime, bool paused, bool liveTime) {
+        timeOfDay = newTime;
+        timePaused = paused;
+        useLiveTime = liveTime;
+    });
+
+    // Initialize settings dialog with current time
+    settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
 
     // Helper: compute sun Y component from timeOfDay.
     auto calcSunHeight = [](float tod) -> float {
@@ -650,10 +700,18 @@ int main()
         const float delta = static_cast<float>(now - lastTime) / static_cast<float>(perfFreq);
         lastTime = now;
 
-        // Control mouse cursor and relative mouse mode based on dialog state
+        // Check if initial loading is complete
+        if (!isInitialLoadComplete && world->isInitialLoadComplete())
+        {
+            isInitialLoadComplete = true;
+            loadingScreen.setActive(false);
+        }
+
+        // Control mouse cursor and relative mouse mode based on dialog state or loading
         bool dialogOpen = settingsDialog.isOpen();
-        SDL_SetRelativeMouseMode(dialogOpen ? SDL_FALSE : SDL_TRUE);
-        SDL_ShowCursor(dialogOpen ? SDL_ENABLE : SDL_DISABLE);
+        bool loading = loadingScreen.isActive();
+        SDL_SetRelativeMouseMode((dialogOpen || loading) ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor((dialogOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
 
         // Poll SDL events
         SDL_Event event;
@@ -668,6 +726,16 @@ int main()
             }
             else if (event.type == SDL_KEYDOWN)
             {
+                // Block all keyboard input during loading (except ESC to quit)
+                if (loading)
+                {
+                    if (event.key.keysym.sym == SDLK_ESCAPE)
+                    {
+                        shouldQuit = true;
+                    }
+                    continue;
+                }
+
                 // Always allow F11 and Alt+Enter, even if ImGui wants keyboard
                 if (event.key.keysym.sym == SDLK_F11)
                 {
@@ -681,7 +749,7 @@ int main()
                 }
                 else if (event.key.keysym.sym == SDLK_c && !dialogOpen)
                 {
-                    // 'C' key toggles camera mode (when dialog closed)
+                    // 'C' key toggles camera mode (when dialog closed and not loading)
                     if (cameraMode == CameraMode::FreeFly)
                     {
                         // Switch to Character mode
@@ -721,20 +789,50 @@ int main()
             waterSim.clear();  // Clear water simulation state
             waterTickAccumulator = 0.0f;
             needsWorldRegeneration = false;
+
+            // Reset loading screen for new world
+            isInitialLoadComplete = false;
+            loadingScreen.setActive(true);
         }
 
-        // Only update camera when dialog is closed (pauses game)
-        if (!dialogOpen)
+        // Only update camera when not loading and (dialog is closed OR chase mode is active)
+        if (!loading && (!dialogOpen || cameraMode == CameraMode::Chase))
         {
             if (cameraMode == CameraMode::FreeFly)
                 flyCamera.update(window, delta);
-            else
+            else if (cameraMode == CameraMode::Character)
                 charCamera.update(window, delta, world.get());
+            else if (cameraMode == CameraMode::Chase)
+            {
+                // Update chase camera, check if it reached target
+                bool stillMoving = chaseCamera.update(window, delta, world.get(), currentSettings.seaLevel);
+                if (!stillMoving)
+                {
+                    // Chase complete - return to previous camera mode
+                    glm::vec3 finalPos = chaseCamera.position();
+
+                    if (previousCameraMode == CameraMode::FreeFly)
+                    {
+                        flyCamera.setPosition(finalPos);
+                        flyCamera.setOrientation(chaseCamera.yaw(), chaseCamera.pitch());
+                    }
+                    else if (previousCameraMode == CameraMode::Character)
+                    {
+                        charCamera.setPosition(finalPos);
+                        charCamera.setOrientation(chaseCamera.yaw(), chaseCamera.pitch());
+                    }
+
+                    cameraMode = previousCameraMode;
+
+                    // Hide chase camera HUD
+                    chaseCameraHUD.hide();
+                }
+            }
         }
 
         // ---- Block targeting and removal (Character camera only) ----------------
         std::optional<Utils::RaycastHit> targetBlock;
-        if (!dialogOpen && cameraMode == CameraMode::Character && world)
+        if (!loading && !dialogOpen && cameraMode == CameraMode::Character && world)
         {
             // Perform raycast from camera eye position along look direction
             glm::vec3 rayOrigin = charCamera.position();
@@ -813,18 +911,51 @@ int main()
                 waterTickAccumulator -= tickInterval;
 
                 // Run water simulation update (within player range)
-                glm::vec3 playerPos = (cameraMode == CameraMode::FreeFly) 
-                    ? flyCamera.position() 
-                    : charCamera.position();
+                glm::vec3 playerPos;
+                if (cameraMode == CameraMode::FreeFly)
+                    playerPos = flyCamera.position();
+                else if (cameraMode == CameraMode::Character)
+                    playerPos = charCamera.position();
+                else
+                    playerPos = chaseCamera.position();
 
                 waterSim.update(world.get(), playerPos, 64.0f); // Update water within 64 blocks
             }
         }
 
-        // Pause time progression when dialog is open
-        if (!dialogOpen)
+        // Time progression control
+        if (!dialogOpen && !loading)
         {
-            timeOfDay = std::fmod(timeOfDay + delta / kDayLength, 1.0f);
+            if (useLiveTime)
+            {
+                // Use real-world local time
+                auto now = std::chrono::system_clock::now();
+                auto now_time_t = std::chrono::system_clock::to_time_t(now);
+                std::tm local_tm;
+                #ifdef _WIN32
+                    localtime_s(&local_tm, &now_time_t);
+                #else
+                    localtime_r(&now_time_t, &local_tm);
+                #endif
+
+                float hours = static_cast<float>(local_tm.tm_hour);
+                float minutes = static_cast<float>(local_tm.tm_min);
+                float seconds = static_cast<float>(local_tm.tm_sec);
+
+                // Convert to 0.0-1.0 range (24 hours = 1.0)
+                timeOfDay = (hours + minutes / 60.0f + seconds / 3600.0f) / 24.0f;
+
+                // Update the settings dialog
+                settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
+            }
+            else if (!timePaused)
+            {
+                // Normal game time progression
+                timeOfDay = std::fmod(timeOfDay + delta / kDayLength, 1.0f);
+
+                // Update the settings dialog periodically
+                settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
+            }
         }
 
         if (kRenderIsolationMode)
@@ -834,9 +965,13 @@ int main()
         }
 
         // Get active camera position
-        glm::vec3 activePos = (cameraMode == CameraMode::FreeFly)
-            ? flyCamera.position()
-            : charCamera.position();
+        glm::vec3 activePos;
+        if (cameraMode == CameraMode::FreeFly)
+            activePos = flyCamera.position();
+        else if (cameraMode == CameraMode::Character)
+            activePos = charCamera.position();
+        else
+            activePos = chaseCamera.position();
 
         // Load/evict chunks around the camera.
         if (world)
@@ -863,9 +998,13 @@ int main()
             : 1.0f;
 
         const glm::mat4 proj    = glm::perspective(glm::radians(70.0f), aspect, 0.1f, 3000.0f);
-        const glm::mat4 view    = (cameraMode == CameraMode::FreeFly)
-            ? flyCamera.viewMatrix()
-            : charCamera.viewMatrix();
+        glm::mat4 view;
+        if (cameraMode == CameraMode::FreeFly)
+            view = flyCamera.viewMatrix();
+        else if (cameraMode == CameraMode::Character)
+            view = charCamera.viewMatrix();
+        else
+            view = chaseCamera.viewMatrix();
         // For sky we need a view matrix without translation (pure rotation).
         const glm::mat4 viewRot = glm::mat4(glm::mat3(view));
         const glm::mat4 invVP   = glm::inverse(proj * viewRot);
@@ -934,10 +1073,31 @@ int main()
 
         // ---- ImGui overlay --------------------------------------------------
         imguiManager.newFrame();
+
+        // Show loading screen if still loading
+        if (loading)
+        {
+            float progress = world->getLoadingProgress();
+            int loadedChunks = world->getLoadedChunkCount();
+            int targetChunks = world->getTargetChunkCount();
+            loadingScreen.render(progress, loadedChunks, targetChunks);
+        }
+
         settingsDialog.render();
 
-        // HUD overlay (camera mode and world position)
-        if (!dialogOpen)
+        // Chase camera HUD - show when in chase mode
+        if (cameraMode == CameraMode::Chase && chaseCameraHUD.isVisible())
+        {
+            chaseCameraHUD.render(
+                chaseCamera.position(),
+                chaseCamera.getTarget(),
+                chaseCamera.getCurrentSpeed(),
+                chaseCamera.getDistanceToTarget()
+            );
+        }
+
+        // HUD overlay (camera mode and world position) - only when not loading
+        if (!loading && !dialogOpen)
         {
             // Use DPI-aware scaling for UI elements
             ImGuiIO& io = ImGui::GetIO();
@@ -973,6 +1133,9 @@ int main()
 
             ImGui::End();
         }
+
+        // Render analog clock in top-left
+        analogClock.render(timeOfDay, fbW, fbH);
 
         imguiManager.render();
 

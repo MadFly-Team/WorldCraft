@@ -963,4 +963,27 @@ const Chunk* ChunkWorld::getChunk(int chunkX, int chunkZ) const
 	return nullptr;
 }
 
+int ChunkWorld::getTargetChunkCount() const
+{
+	// Calculate the expected number of chunks within render distance
+	// This is a square around the camera (2*renderDist+1)^2
+	const int radius = m_renderDist;
+	return (2 * radius + 1) * (2 * radius + 1);
+}
+
+float ChunkWorld::getLoadingProgress() const
+{
+	const int target = getTargetChunkCount();
+	const int loaded = getLoadedChunkCount();
+	if (target == 0) return 1.0f;
+	return std::min(1.0f, static_cast<float>(loaded) / static_cast<float>(target));
+}
+
+bool ChunkWorld::isInitialLoadComplete() const
+{
+	// Consider loading complete when we have at least 95% of target chunks
+	// This accounts for chunks that might be evicted or still meshing
+	return getLoadingProgress() >= 0.95f;
+}
+
 } // namespace Chunk

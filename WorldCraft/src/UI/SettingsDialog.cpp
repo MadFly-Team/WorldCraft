@@ -1,7 +1,7 @@
 #include <UI/SettingsDialog.h>
 #include <imgui.h>
 #include <cstring>
-#include <ctime>
+#include <random>
 
 namespace UI
 {
@@ -73,6 +73,16 @@ bool SettingsDialog::render()
 		renderWaterSettings();
 	}
 
+	if (ImGui::CollapsingHeader("Camera Settings"))
+	{
+		renderCameraSettings();
+	}
+
+	if (ImGui::CollapsingHeader("Time Settings"))
+	{
+		renderTimeSettings();
+	}
+
 	ImGui::Separator();
 	renderGenerateButton();
 
@@ -118,7 +128,10 @@ void SettingsDialog::renderBasicSettings()
 	ImGui::SameLine();
 	if (ImGui::Button("Random"))
 	{
-		m_settings.seed = static_cast<int>(time(nullptr));
+		std::random_device rd;
+		std::mt19937 gen(rd());
+		std::uniform_int_distribution<int> dist(1, 999999999);
+		m_settings.seed = dist(gen);
 	}
 
 	ImGui::SliderInt("Render Distance", &m_settings.renderDistance, 4, 32);
@@ -228,6 +241,27 @@ void SettingsDialog::renderWaterSettings()
 	ImGui::TextDisabled("Visual wave effect on water surfaces (performance impact)");
 }
 
+void SettingsDialog::renderCameraSettings()
+{
+	ImGui::Text("Start Position for Camera Navigation");
+	ImGui::Spacing();
+
+	ImGui::InputFloat("X Position", &m_settings.startX, 1.0f, 10.0f, "%.1f");
+	ImGui::InputFloat("Y Position", &m_settings.startY, 1.0f, 10.0f, "%.1f");
+	ImGui::InputFloat("Z Position", &m_settings.startZ, 1.0f, 10.0f, "%.1f");
+
+	ImGui::Spacing();
+	ImGui::TextDisabled("Click 'Go To Position' to fly the camera to this location");
+
+	if (ImGui::Button("Go To Position", ImVec2(150.0f, 30.0f)))
+	{
+		if (m_onGoToPosition)
+		{
+			m_onGoToPosition(m_settings.startX, m_settings.startY, m_settings.startZ);
+		}
+	}
+}
+
 void SettingsDialog::renderGenerateButton()
 {
 	ImGui::Spacing();
@@ -254,4 +288,103 @@ void SettingsDialog::renderGenerateButton()
 	ImGui::TextDisabled("F11: Toggle  |  ESC: Close  |  Alt+Enter: Fullscreen");
 }
 
+void SettingsDialog::renderTimeSettings()
+{
+	ImGui::Text("Day/Night Cycle Control");
+	ImGui::Spacing();
+
+	// Time of day slider (0.0 = midnight, 0.25 = sunrise, 0.5 = noon, 0.75 = sunset, 1.0 = midnight)
+	float hours24 = m_timeOfDay * 24.0f;
+	int hour = static_cast<int>(hours24) % 24;
+	int minute = static_cast<int>((hours24 - hour) * 60.0f);
+
+	ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Current Time: %02d:%02d", hour, minute);
+
+	if (ImGui::SliderFloat("Time of Day", &m_timeOfDay, 0.0f, 1.0f, ""))
+	{
+		// Only apply if not using live time
+		if (!m_useLiveTime && m_onTimeSettings)
+		{
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+		}
+	}
+
+	// Time presets
+	ImGui::Spacing();
+	ImGui::Text("Quick Presets:");
+
+	if (ImGui::Button("Sunrise (06:00)", ImVec2(130.0f, 0.0f)))
+	{
+		m_timeOfDay = 0.25f;
+		m_useLiveTime = false;
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Noon (12:00)", ImVec2(130.0f, 0.0f)))
+	{
+		m_timeOfDay = 0.5f;
+		m_useLiveTime = false;
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Sunset (18:00)", ImVec2(130.0f, 0.0f)))
+	{
+		m_timeOfDay = 0.75f;
+		m_useLiveTime = false;
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+
+	if (ImGui::Button("Midnight (00:00)", ImVec2(130.0f, 0.0f)))
+	{
+		m_timeOfDay = 0.0f;
+		m_useLiveTime = false;
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+
+	// Pause/Resume time
+	if (ImGui::Checkbox("Pause Day/Night Cycle", &m_timePaused))
+	{
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("When paused, time will remain fixed at the current value");
+	}
+
+	ImGui::Spacing();
+
+	// Use real-world time
+	if (ImGui::Checkbox("Use Real-World Local Time", &m_useLiveTime))
+	{
+		if (m_useLiveTime)
+		{
+			// Disable pause when enabling live time
+			m_timePaused = false;
+		}
+		if (m_onTimeSettings)
+			m_onTimeSettings(m_timeOfDay, m_timePaused, m_useLiveTime);
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Syncs the in-game time with your computer's local time");
+	}
+
+	ImGui::Spacing();
+	ImGui::TextDisabled("Note: Real-world time overrides pause and manual time settings");
 }
+
+}
+
