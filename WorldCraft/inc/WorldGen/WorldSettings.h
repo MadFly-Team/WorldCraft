@@ -44,6 +44,11 @@ namespace WorldGen
 		// World name (for future save/load)
 		char  worldName[64]    = "New World";
 
+		// Start position for camera navigation
+		float startX = 0.0f;
+		float startY = 100.0f;
+		float startZ = 0.0f;
+
 		// Helper to create default settings
 		static WorldSettings createDefault()
 		{

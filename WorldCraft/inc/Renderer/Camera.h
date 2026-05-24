@@ -147,4 +147,83 @@ namespace Renderer
 		bool isOnGround(const glm::vec3& pos, const Chunk::ChunkWorld* world) const;
 	};
 
+	// ---------------------------------------------------------------------------
+	// ChaseCamera — Cinematic camera that flies to a target position
+	//
+	// Features:
+	//   - Smoothly interpolates from current position to target
+	//   - Hugs terrain contours, maintaining height above ground
+	//   - Maintains minimum height above sea level
+	//   - Automatically signals completion when destination reached
+	//
+	// Physics:
+	//   - No user input during flight
+	//   - Queries terrain height for ground-hugging behavior
+	//   - Smooth velocity-based interpolation
+	// ---------------------------------------------------------------------------
+	class ChaseCamera
+	{
+	public:
+		// Construct with initial position and target
+		explicit ChaseCamera(glm::vec3 startPos = glm::vec3(0.0f, 100.0f, 0.0f));
+
+		// Initialize camera
+		void init(SDL_Window* window);
+
+		// Set the target position to fly towards
+		void setTarget(glm::vec3 target) { m_target = target; m_hasTarget = true; m_currentSpeed = 0.0f; }
+
+		// Update camera position, returns true if still moving, false if reached target
+		bool update(SDL_Window* window, float dt, const Chunk::ChunkWorld* world, int seaLevel);
+
+		// Re-attach cursor capture state after a window mode change
+		void onWindowModeChanged(SDL_Window* window);
+
+		// Detach cursor state before destroying the window
+		void onWindowAboutToBeDestroyed(SDL_Window* window);
+
+		// Returns the view matrix (world → camera space)
+		glm::mat4 viewMatrix() const;
+
+		// Current world-space position
+		glm::vec3 position() const { return m_pos; }
+
+		// Unit vector the camera is looking along (towards target)
+		glm::vec3 forward() const;
+
+		// Camera orientation
+		float yaw() const { return m_yaw; }
+		float pitch() const { return m_pitch; }
+		void setPosition(glm::vec3 pos) { m_pos = pos; }
+
+		// Check if camera has reached target
+		bool hasReachedTarget() const { return !m_hasTarget; }
+
+		// Get chase camera info for HUD
+		glm::vec3 getTarget() const { return m_target; }
+		float getCurrentSpeed() const { return m_currentSpeed; }
+		float getDistanceToTarget() const 
+		{ 
+			if (!m_hasTarget) return 0.0f;
+			return glm::length(m_target - m_pos); 
+		}
+
+	private:
+		glm::vec3 m_pos;
+		glm::vec3 m_target;
+		bool      m_hasTarget = false;
+
+		float     m_yaw = -90.0f;
+		float     m_pitch = 0.0f;
+		float     m_currentSpeed = 0.0f;  // Current speed for acceleration/deceleration
+
+		// Chase camera constants
+		static constexpr float m_maxSpeed = 80.0f;       // max speed (2x boost speed: 8.0f * 5.0f * 2.0f)
+		static constexpr float m_acceleration = 15.0f;   // acceleration rate (units/s²)
+		static constexpr float m_terrainHeight = 15.0f;  // height above terrain/sea level (increased for safety)
+		static constexpr float m_arrivalDist = 1.0f;     // distance to consider "arrived" (reduced for closer approach)
+		static constexpr float m_lookAhead = 15.0f;      // how far ahead to look for terrain (increased)
+		static constexpr float m_decelDist = 40.0f;      // distance at which to start decelerating (increased for smoother stop)
+	};
+
 } // namespace Renderer

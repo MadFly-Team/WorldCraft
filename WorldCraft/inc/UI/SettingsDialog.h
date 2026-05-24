@@ -10,6 +10,8 @@ namespace UI
 	{
 	public:
 		using OnGenerateWorldCallback = std::function<void(const WorldGen::WorldSettings&)>;
+		using OnGoToPositionCallback = std::function<void(float x, float y, float z)>;
+		using OnTimeSettingsCallback = std::function<void(float timeOfDay, bool isPaused, bool useLiveTime)>;
 
 		SettingsDialog();
 
@@ -29,6 +31,26 @@ namespace UI
 			m_onGenerateWorld = callback;
 		}
 
+		// Set callback for when user clicks "Go To Position"
+		void setGoToPositionCallback(OnGoToPositionCallback callback)
+		{
+			m_onGoToPosition = callback;
+		}
+
+		// Set callback for time settings changes
+		void setTimeSettingsCallback(OnTimeSettingsCallback callback)
+		{
+			m_onTimeSettings = callback;
+		}
+
+		// Set current time (for external updates)
+		void setCurrentTime(float timeOfDay, bool isPaused, bool useLiveTime)
+		{
+			m_timeOfDay = timeOfDay;
+			m_timePaused = isPaused;
+			m_useLiveTime = useLiveTime;
+		}
+
 		// Get current settings
 		const WorldGen::WorldSettings& getSettings() const { return m_settings; }
 
@@ -44,11 +66,20 @@ namespace UI
 		void renderOreSettings();
 		void renderTreeSettings();
 		void renderWaterSettings();
+		void renderCameraSettings();
+		void renderTimeSettings();
 		void renderGenerateButton();
 
 		WorldGen::WorldSettings m_settings;
 		OnGenerateWorldCallback m_onGenerateWorld;
-		bool m_isOpen = true;  // Start open by default
+		OnGoToPositionCallback m_onGoToPosition;
+		OnTimeSettingsCallback m_onTimeSettings;
+		bool m_isOpen = false;  // Start closed by default
 		int m_selectedPreset = 0;  // 0 = Default, 1 = Flat, 2 = Mountainous, etc.
+
+		// Time settings state
+		float m_timeOfDay = 0.25f;  // Start at sunrise
+		bool m_timePaused = false;
+		bool m_useLiveTime = false;
 	};
 }

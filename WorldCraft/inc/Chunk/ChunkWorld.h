@@ -140,6 +140,12 @@ void update(const glm::vec3& cameraPos);
 	Chunk* getChunk(int chunkX, int chunkZ);
 	const Chunk* getChunk(int chunkX, int chunkZ) const;
 
+	// Check initial loading status - returns percentage loaded (0.0 to 1.0)
+	float getLoadingProgress() const;
+	bool isInitialLoadComplete() const;
+	int getLoadedChunkCount() const { return static_cast<int>(m_chunks.size()); }
+	int getTargetChunkCount() const;
+
 private:
 	WorldGen::WorldSettings m_settings;
 	int  m_renderDist;
