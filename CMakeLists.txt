@@ -55,7 +55,19 @@ glad_add_library(glad_gl_core_33 STATIC
 )
 
 # --- ImGui: UI library ---
-add_subdirectory(third_party/imgui)
+add_library(imgui STATIC
+  third_party/imgui/imgui.cpp
+  third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp
+  third_party/imgui/imgui_widgets.cpp
+  third_party/imgui/backends/imgui_impl_sdl2.cpp
+  third_party/imgui/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC
+  third_party/imgui
+  third_party/imgui/backends
+)
+target_link_libraries(imgui PUBLIC SDL2-static)
 
 #-----------------------------------------------------------------------------
 # add the subdirectories for the library, IDE and testing framework being used
@@ -65,4 +77,3 @@ add_subdirectory(WorldCraft)
 
 # Set WorldCraft as the Visual Studio startup project
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT WorldCraft)
-
