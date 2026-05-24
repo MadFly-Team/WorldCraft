@@ -69,8 +69,7 @@ target_include_directories(imgui PUBLIC
   third_party/imgui
   third_party/imgui/backends
 )
-target_link_libraries(imgui PUBLIC SDL2-static)
-target_link_libraries(imgui PUBLIC OpenGL::GL)
+target_link_libraries(imgui PUBLIC SDL2-static OpenGL::GL)
 
 #-----------------------------------------------------------------------------
 # add the subdirectories for the library, IDE and testing framework being used
