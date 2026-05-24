@@ -31,4 +31,5 @@ target_link_libraries(WorldCraft PRIVATE
     glm::glm
     stb
     imgui
+    ZLIB::ZLIB
 )

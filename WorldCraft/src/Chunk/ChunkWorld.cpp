@@ -131,9 +131,10 @@ void ChunkEntry::destroy()
 // ChunkWorld
 // ---------------------------------------------------------------------------
 
-ChunkWorld::ChunkWorld(const WorldGen::WorldSettings& settings)
+ChunkWorld::ChunkWorld(const WorldGen::WorldSettings& settings, Persistence::WorldPersistence* persistence)
 	: m_settings(settings)
 	, m_renderDist(settings.renderDistance)
+	, m_persistence(persistence)
 {
 	const unsigned int hw = std::thread::hardware_concurrency();
 	// Leave more cores free for main thread and GPU work
@@ -259,33 +260,51 @@ m_workQueue.pop();
 
 if (item.phase == WorkPhase::Generate)
 {
-// Generate voxel data and store in the shared cache.
-auto chunkPtr = std::make_shared<Chunk>();
-terrainGen.generate(*chunkPtr, item.coord.x, item.coord.z);
+	// First, try to load chunk from disk if persistence is available
+	std::shared_ptr<Chunk> chunkPtr;
+	bool loadedFromDisk = false;
 
-{
-	std::unique_lock<std::shared_mutex> lk(m_voxelMutex);
-	m_voxelCache[item.coord] = chunkPtr;
-}
+	if (m_persistence && m_persistence->hasChunk(item.coord.x, item.coord.z))
+	{
+		auto loadedChunk = m_persistence->loadChunk(item.coord.x, item.coord.z);
+		if (loadedChunk)
+		{
+			chunkPtr = std::move(loadedChunk);
+			loadedFromDisk = true;
+			std::cout << "[ChunkWorld] Loaded chunk (" << item.coord.x << ", " << item.coord.z << ") from disk" << std::endl;
+		}
+	}
 
-// Remove from in-flight BEFORE trying to enqueue mesh jobs,
-// otherwise tryEnqueueMesh will see this coord as in-flight and skip it.
-{
-	std::lock_guard<std::mutex> lk(m_inFlightMutex);
-	m_inFlight.erase(item.coord);
-}
+	// If not loaded from disk, generate procedurally
+	if (!loadedFromDisk)
+	{
+		chunkPtr = std::make_shared<Chunk>();
+		terrainGen.generate(*chunkPtr, item.coord.x, item.coord.z);
+	}
 
-// Try to start mesh jobs for this chunk and its four neighbours —
-// any of them may now have all required voxel data available.
-const ChunkCoord neighbours[5] = {
-item.coord,
-{ item.coord.x + 1, item.coord.z },
-{ item.coord.x - 1, item.coord.z },
-{ item.coord.x,     item.coord.z + 1 },
-{ item.coord.x,     item.coord.z - 1 },
-};
-for (const auto& nc : neighbours)
-tryEnqueueMesh(nc);
+	{
+		std::unique_lock<std::shared_mutex> lk(m_voxelMutex);
+		m_voxelCache[item.coord] = chunkPtr;
+	}
+
+	// Remove from in-flight BEFORE trying to enqueue mesh jobs,
+	// otherwise tryEnqueueMesh will see this coord as in-flight and skip it.
+	{
+		std::lock_guard<std::mutex> lk(m_inFlightMutex);
+		m_inFlight.erase(item.coord);
+	}
+
+	// Try to start mesh jobs for this chunk and its four neighbours —
+	// any of them may now have all required voxel data available.
+	const ChunkCoord neighbours[5] = {
+	item.coord,
+	{ item.coord.x + 1, item.coord.z },
+	{ item.coord.x - 1, item.coord.z },
+	{ item.coord.x,     item.coord.z + 1 },
+	{ item.coord.x,     item.coord.z - 1 },
+	};
+	for (const auto& nc : neighbours)
+	tryEnqueueMesh(nc);
 }
 else // WorkPhase::Mesh
 {
@@ -864,6 +883,13 @@ bool ChunkWorld::setBlockAt(float worldX, float worldY, float worldZ, Voxel::Blo
 		if (it != m_voxelCache.end())
 		{
 			it->second->setBlock(lx, ly, lz, newBlock);
+
+			// Mark chunk as modified for persistence
+			{
+				std::lock_guard<std::mutex> modLock(m_modifiedChunksMutex);
+				m_modifiedChunks.insert(coord);
+				std::cout << "[ChunkWorld] Marked chunk (" << cx << ", " << cz << ") as modified. Total modified: " << m_modifiedChunks.size() << std::endl;
+			}
 		}
 		else
 		{
@@ -984,6 +1010,61 @@ bool ChunkWorld::isInitialLoadComplete() const
 	// Consider loading complete when we have at least 95% of target chunks
 	// This accounts for chunks that might be evicted or still meshing
 	return getLoadingProgress() >= 0.95f;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence Operations
+// ---------------------------------------------------------------------------
+
+int ChunkWorld::saveModifiedChunks()
+{
+	if (!m_persistence) return 0;
+
+	// Get snapshot of modified chunks
+	std::vector<std::pair<int, int>> coordsToSave;
+	{
+		std::lock_guard<std::mutex> lock(m_modifiedChunksMutex);
+		coordsToSave.reserve(m_modifiedChunks.size());
+		std::cout << "[ChunkWorld] Saving " << m_modifiedChunks.size() << " modified chunks..." << std::endl;
+		for (const auto& coord : m_modifiedChunks)
+		{
+			coordsToSave.emplace_back(coord.x, coord.z);
+			std::cout << "[ChunkWorld]   - Chunk (" << coord.x << ", " << coord.z << ")" << std::endl;
+		}
+	}
+
+	if (coordsToSave.empty()) return 0;
+
+	// Build map of chunks to save
+	std::unordered_map<std::pair<int, int>, const Chunk*> chunksToSave;
+	{
+		std::shared_lock<std::shared_mutex> lock(m_voxelMutex);
+		for (const auto& coordPair : coordsToSave)
+		{
+			ChunkCoord coord{ coordPair.first, coordPair.second };
+			auto it = m_voxelCache.find(coord);
+			if (it != m_voxelCache.end())
+			{
+				chunksToSave[coordPair] = it->second.get();
+			}
+		}
+	}
+
+	// Save all chunks in one batch
+	int saved = m_persistence->saveChunks(coordsToSave, chunksToSave);
+
+	// Clear modified set for successfully saved chunks
+	if (saved > 0)
+	{
+		std::lock_guard<std::mutex> lock(m_modifiedChunksMutex);
+		for (const auto& coordPair : coordsToSave)
+		{
+			ChunkCoord coord{ coordPair.first, coordPair.second };
+			m_modifiedChunks.erase(coord);
+		}
+	}
+
+	return saved;
 }
 
 } // namespace Chunk

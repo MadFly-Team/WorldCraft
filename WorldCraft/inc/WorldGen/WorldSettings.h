@@ -41,6 +41,10 @@ namespace WorldGen
 		bool  enableWaterWaves = true;     // Enable visual wave effect on water surfaces
 		float waterFlowRate    = 0.5f;     // Ticks per second for water updates (0.5 = every 2 seconds)
 
+		// Persistence settings
+		bool  enableAutoSave   = false;    // Auto-save every 5 minutes (default: OFF)
+		bool  loadLastWorldOnStartup = true;  // Load most recent world on startup (default: ON for testing)
+
 		// World name (for future save/load)
 		char  worldName[64]    = "New World";
 

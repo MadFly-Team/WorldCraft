@@ -14,12 +14,18 @@
 #include <UI/LoadingScreen.h>
 #include <UI/ChaseCameraHUD.h>
 #include <UI/AnalogClock.h>
+#include <UI/GameMenu.h>
+#include <UI/WorldSelectionDialog.h>
+#include <UI/WorldNameDialog.h>
+#include <UI/SaveConfirmationDialog.h>
 #include <WorldGen/WorldSettings.h>
+#include <Persistence/WorldPersistence.h>
 #include <Utils/Raycast.h>
 #include <imgui.h>
 #include <thread>
 #include <chrono>
 #include <ctime>
+#include <algorithm>
 
 // ---------------------------------------------------------------------------
 // Window
@@ -581,6 +587,10 @@ int main()
     UI::LoadingScreen loadingScreen;
     UI::ChaseCameraHUD chaseCameraHUD;
     UI::AnalogClock analogClock;
+    UI::GameMenu gameMenu;
+    UI::WorldSelectionDialog worldSelectionDialog;
+    UI::WorldNameDialog worldNameDialog;
+    UI::SaveConfirmationDialog saveConfirmationDialog;
     bool isInitialLoadComplete = false;
 
     // ---- Camera System ------------------------------------------------------
@@ -596,10 +606,56 @@ int main()
     flyCamera.init(window);
     charCamera.init(window);
 
+    // ---- Persistence System -------------------------------------------------
+    auto persistence = std::make_unique<Persistence::WorldPersistence>("saves");
+    Persistence::WorldMetadata worldMetadata = Persistence::WorldMetadata::createDefault();
+
+    // Check if we should load the last played world
+    bool loadedLastWorld = false;
+    WorldGen::WorldSettings defaultSettings = WorldGen::WorldSettings::createDefault();
+
+    if (defaultSettings.loadLastWorldOnStartup)
+    {
+        // Try to load the most recently played world
+        auto worlds = persistence->listWorlds();
+        if (!worlds.empty())
+        {
+            // The worlds are already sorted by last played time (most recent first)
+            const auto& lastWorld = worlds[0];
+            std::cout << "Loading last played world: " << lastWorld.worldName << std::endl;
+
+            if (persistence->loadWorld(lastWorld.worldName, worldMetadata))
+            {
+                loadedLastWorld = true;
+                std::cout << "Successfully loaded world: " << lastWorld.worldName << std::endl;
+            }
+            else
+            {
+                std::cout << "Failed to load last world, creating new default world" << std::endl;
+            }
+        }
+    }
+
+    // If we didn't load a world, create a default one
+    if (!loadedLastWorld)
+    {
+        worldMetadata.worldName = "WorldCraft_World";
+        persistence->createWorld(worldMetadata);
+    }
+
+    // Restore camera from saved metadata
+    cameraMode = static_cast<CameraMode>(worldMetadata.cameraMode);
+    flyCamera.setPosition(worldMetadata.playerPosition);
+    flyCamera.setYaw(worldMetadata.playerYaw);
+    flyCamera.setPitch(worldMetadata.playerPitch);
+    charCamera.setPosition(worldMetadata.playerPosition);
+    charCamera.setYaw(worldMetadata.playerYaw);
+    charCamera.setPitch(worldMetadata.playerPitch);
+
     // ---- World --------------------------------------------------------------
-    // Start with default settings
-    WorldGen::WorldSettings currentSettings = WorldGen::WorldSettings::createDefault();
-    auto world = std::make_unique<Chunk::ChunkWorld>(currentSettings);
+    // Start with settings from metadata
+    WorldGen::WorldSettings currentSettings = worldMetadata.settings;
+    auto world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
 
     // ---- Water Simulation ---------------------------------------------------
     World::WaterSimulation waterSim;
@@ -647,16 +703,238 @@ int main()
     // ---- Day/night ---------------------------------------------------------
     // One full day = 480 real seconds (8 minutes).  Change kDayLength to taste.
     static constexpr float kDayLength  = 480.0f;
-    // Start near dawn so the player immediately sees colour.
-    float timeOfDay = 0.22f;  // 0=midnight, 0.25=dawn, 0.5=noon, 0.75=dusk
-    bool timePaused = false;
-    bool useLiveTime = false;
+    // Restore time from saved metadata
+    float timeOfDay = worldMetadata.timeOfDay;
+    bool timePaused = worldMetadata.timePaused;
+    bool useLiveTime = worldMetadata.useLiveTime;
 
     // Set time settings callback
     settingsDialog.setTimeSettingsCallback([&](float newTime, bool paused, bool liveTime) {
         timeOfDay = newTime;
         timePaused = paused;
         useLiveTime = liveTime;
+    });
+
+    // Set save world callback
+    settingsDialog.setSaveWorldCallback([&]() {
+        int savedCount = world->saveModifiedChunks();
+
+        // Always update metadata with current state
+        worldMetadata.settings = currentSettings;
+        worldMetadata.lastPlayedTime = std::time(nullptr);
+
+        // Save camera position and orientation
+        glm::vec3 camPos;
+        if (cameraMode == CameraMode::FreeFly)
+            camPos = flyCamera.position();
+        else if (cameraMode == CameraMode::Character)
+            camPos = charCamera.position();
+        else
+            camPos = chaseCamera.position();
+
+        worldMetadata.playerPosition = camPos;
+        worldMetadata.playerYaw = flyCamera.getYaw();
+        worldMetadata.playerPitch = flyCamera.getPitch();
+        worldMetadata.cameraMode = static_cast<int>(cameraMode);
+
+        // Save time settings
+        worldMetadata.timeOfDay = timeOfDay;
+        worldMetadata.timePaused = timePaused;
+        worldMetadata.useLiveTime = useLiveTime;
+
+        persistence->saveMetadata(worldMetadata);
+
+        if (savedCount > 0)
+        {
+            std::cout << "Saved " << savedCount << " modified chunks to disk" << std::endl;
+        }
+        else
+        {
+            std::cout << "No modified chunks to save (metadata updated)" << std::endl;
+        }
+    });
+
+    // Set game menu action callback
+    gameMenu.setActionCallback([&](UI::MenuAction action) {
+        switch (action)
+        {
+        case UI::MenuAction::Continue:
+            gameMenu.hide();
+            break;
+
+        case UI::MenuAction::SaveWorld:
+        {
+            int savedCount = world->saveModifiedChunks();
+
+            // Update metadata with current state
+            worldMetadata.settings = currentSettings;
+            worldMetadata.lastPlayedTime = std::time(nullptr);
+
+            // Save camera position and orientation
+            glm::vec3 camPos;
+            if (cameraMode == CameraMode::FreeFly)
+                camPos = flyCamera.position();
+            else if (cameraMode == CameraMode::Character)
+                camPos = charCamera.position();
+            else
+                camPos = chaseCamera.position();
+
+            worldMetadata.playerPosition = camPos;
+            worldMetadata.playerYaw = flyCamera.getYaw();  // Use fly camera's yaw as reference
+            worldMetadata.playerPitch = flyCamera.getPitch();
+
+            // Save camera mode
+            worldMetadata.cameraMode = static_cast<int>(cameraMode);
+
+            // Save time settings
+            worldMetadata.timeOfDay = timeOfDay;
+            worldMetadata.timePaused = timePaused;
+            worldMetadata.useLiveTime = useLiveTime;
+
+            persistence->saveMetadata(worldMetadata);
+
+            // Show confirmation dialog
+            saveConfirmationDialog.show(savedCount);
+
+            if (savedCount > 0)
+            {
+                std::cout << "[Menu] Saved " << savedCount << " modified chunks" << std::endl;
+            }
+            else
+            {
+                std::cout << "[Menu] No modified chunks to save (world saved with current settings)" << std::endl;
+            }
+            gameMenu.hide();
+            break;
+        }
+
+        case UI::MenuAction::CreateNewWorld:
+        {
+            gameMenu.hide();
+            // Get list of existing world names for validation
+            auto worlds = persistence->listWorlds();
+            std::vector<std::string> worldNames;
+            for (const auto& w : worlds)
+                worldNames.push_back(w.worldName);
+            worldNameDialog.setExistingWorldNames(worldNames);
+
+            // Generate a unique suggested name
+            std::string suggestedName = "New World";
+            int counter = 1;
+            while (std::find(worldNames.begin(), worldNames.end(), suggestedName) != worldNames.end())
+            {
+                suggestedName = "New World " + std::to_string(counter);
+                counter++;
+            }
+
+            worldNameDialog.show(suggestedName);
+            break;
+        }
+
+        case UI::MenuAction::LoadWorld:
+        {
+            gameMenu.hide();
+            worldSelectionDialog.setPersistence(persistence.get());
+            worldSelectionDialog.refreshWorldList();
+            worldSelectionDialog.show();
+            break;
+        }
+        }
+    });
+
+    // Set world name dialog callback (for creating new world)
+    worldNameDialog.setConfirmCallback([&](const std::string& worldName) {
+        std::cout << "[WorldName] Creating new world: " << worldName << std::endl;
+
+        // Create new world with the specified name
+        Persistence::WorldMetadata newMetadata = Persistence::WorldMetadata::createDefault(worldName);
+        newMetadata.settings = currentSettings;  // Use current settings as default
+
+        if (persistence->createWorld(newMetadata))
+        {
+            worldMetadata = newMetadata;
+            std::cout << "[WorldName] World created successfully" << std::endl;
+
+            // Open settings dialog to let user configure world generation
+            settingsDialog.show();
+        }
+        else
+        {
+            std::cout << "[WorldName] Failed to create world" << std::endl;
+        }
+    });
+
+    // Set world selection dialog callback (for loading existing world)
+    worldSelectionDialog.setLoadWorldCallback([&](const std::string& worldName) {
+        std::cout << "[WorldSelection] Loading world: " << worldName << std::endl;
+
+        // Save current world before switching
+        if (persistence->isWorldOpen())
+        {
+            int savedCount = world->saveModifiedChunks();
+            if (savedCount > 0)
+            {
+                // Save current camera state
+                glm::vec3 camPos;
+                if (cameraMode == CameraMode::FreeFly)
+                    camPos = flyCamera.position();
+                else if (cameraMode == CameraMode::Character)
+                    camPos = charCamera.position();
+                else
+                    camPos = chaseCamera.position();
+
+                worldMetadata.playerPosition = camPos;
+                worldMetadata.playerYaw = flyCamera.getYaw();
+                worldMetadata.playerPitch = flyCamera.getPitch();
+                worldMetadata.cameraMode = static_cast<int>(cameraMode);
+                worldMetadata.timeOfDay = timeOfDay;
+                worldMetadata.timePaused = timePaused;
+                worldMetadata.useLiveTime = useLiveTime;
+                worldMetadata.lastPlayedTime = std::time(nullptr);
+
+                persistence->saveMetadata(worldMetadata);
+                std::cout << "[WorldSelection] Saved " << savedCount << " chunks from previous world" << std::endl;
+            }
+        }
+
+        // Load the selected world
+        if (persistence->loadWorld(worldName, worldMetadata))
+        {
+            std::cout << "[WorldSelection] Loaded world metadata" << std::endl;
+
+            // Apply loaded settings
+            currentSettings = worldMetadata.settings;
+            settingsDialog.setSettings(currentSettings);
+
+            // Restore camera position and mode
+            cameraMode = static_cast<CameraMode>(worldMetadata.cameraMode);
+            flyCamera.setPosition(worldMetadata.playerPosition);
+            flyCamera.setYaw(worldMetadata.playerYaw);
+            flyCamera.setPitch(worldMetadata.playerPitch);
+            charCamera.setPosition(worldMetadata.playerPosition);
+            charCamera.setYaw(worldMetadata.playerYaw);
+            charCamera.setPitch(worldMetadata.playerPitch);
+
+            std::cout << "[WorldSelection] Restored camera: pos(" 
+                      << worldMetadata.playerPosition.x << ", "
+                      << worldMetadata.playerPosition.y << ", "
+                      << worldMetadata.playerPosition.z << ") mode=" 
+                      << worldMetadata.cameraMode << std::endl;
+
+            // Trigger world regeneration
+            pendingSettings = currentSettings;
+            needsWorldRegeneration = true;
+
+            // Restore time settings
+            timeOfDay = worldMetadata.timeOfDay;
+            timePaused = worldMetadata.timePaused;
+            useLiveTime = worldMetadata.useLiveTime;
+            settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
+        }
+        else
+        {
+            std::cout << "[WorldSelection] Failed to load world" << std::endl;
+        }
     });
 
     // Initialize settings dialog with current time
@@ -694,6 +972,10 @@ int main()
     bool shouldQuit = false;
     bool characterTorchEnabled = false;  // Toggle for character's torch light
 
+    // Auto-save system
+    float autoSaveTimer = 0.0f;
+    constexpr float AUTO_SAVE_INTERVAL = 300.0f;  // Auto-save every 5 minutes (300 seconds)
+
     while (!shouldQuit)
     {
         const Uint64 now = SDL_GetPerformanceCounter();
@@ -707,11 +989,12 @@ int main()
             loadingScreen.setActive(false);
         }
 
-        // Control mouse cursor and relative mouse mode based on dialog state or loading
-        bool dialogOpen = settingsDialog.isOpen();
+        // Control mouse cursor and relative mouse mode based on dialog/menu state or loading
+        bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen();
+        bool menuOpen = gameMenu.isVisible();
         bool loading = loadingScreen.isActive();
-        SDL_SetRelativeMouseMode((dialogOpen || loading) ? SDL_FALSE : SDL_TRUE);
-        SDL_ShowCursor((dialogOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
+        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || loading) ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor((dialogOpen || menuOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
 
         // Poll SDL events
         SDL_Event event;
@@ -736,8 +1019,13 @@ int main()
                     continue;
                 }
 
-                // Always allow F11 and Alt+Enter, even if ImGui wants keyboard
-                if (event.key.keysym.sym == SDLK_F11)
+                // Always allow F10, F11 and Alt+Enter, even if ImGui wants keyboard
+                if (event.key.keysym.sym == SDLK_F10)
+                {
+                    // F10 toggles game menu
+                    gameMenu.toggle();
+                }
+                else if (event.key.keysym.sym == SDLK_F11)
                 {
                     // F11 toggles settings dialog
                     settingsDialog.toggle();
@@ -774,9 +1062,31 @@ int main()
                 }
                 else if (event.key.keysym.sym == SDLK_ESCAPE && !dialogOpen)
                 {
-                    // ESC quits only if dialog is closed (ESC within dialog is handled by ImGui)
-                    shouldQuit = true;
+                    // ESC closes menu if open, otherwise quits
+                    if (gameMenu.isVisible())
+                    {
+                        gameMenu.hide();
+                    }
+                    else
+                    {
+                        shouldQuit = true;
+                    }
                 }
+                else if (gameMenu.isVisible())
+                {
+                    // Handle menu navigation
+                    gameMenu.handleKeyPress(event.key.keysym.sym);
+                }
+            }
+            else if (event.type == SDL_MOUSEMOTION && gameMenu.isVisible())
+            {
+                // Handle mouse movement for menu hover
+                gameMenu.handleMouseMove(static_cast<float>(event.motion.x), static_cast<float>(event.motion.y));
+            }
+            else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT && gameMenu.isVisible())
+            {
+                // Handle mouse click for menu selection
+                gameMenu.handleMouseClick(static_cast<float>(event.button.x), static_cast<float>(event.button.y));
             }
         }
 
@@ -785,7 +1095,7 @@ int main()
         {
             currentSettings = pendingSettings;
             world.reset();  // Destroy old world
-            world = std::make_unique<Chunk::ChunkWorld>(currentSettings);
+            world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
             waterSim.clear();  // Clear water simulation state
             waterTickAccumulator = 0.0f;
             needsWorldRegeneration = false;
@@ -795,8 +1105,8 @@ int main()
             loadingScreen.setActive(true);
         }
 
-        // Only update camera when not loading and (dialog is closed OR chase mode is active)
-        if (!loading && (!dialogOpen || cameraMode == CameraMode::Chase))
+        // Only update camera when not loading and (dialog/menu is closed OR chase mode is active)
+        if (!loading && !menuOpen && (!dialogOpen || cameraMode == CameraMode::Chase))
         {
             if (cameraMode == CameraMode::FreeFly)
                 flyCamera.update(window, delta);
@@ -958,6 +1268,48 @@ int main()
             }
         }
 
+        // Auto-save system - save modified chunks periodically
+        if (!loading && currentSettings.enableAutoSave)
+        {
+            autoSaveTimer += delta;
+            if (autoSaveTimer >= AUTO_SAVE_INTERVAL)
+            {
+                autoSaveTimer = 0.0f;
+                int modifiedCount = world->getModifiedChunkCount();
+                if (modifiedCount > 0)
+                {
+                    int savedCount = world->saveModifiedChunks();
+                    if (savedCount > 0)
+                    {
+                        // Update metadata with current state
+                        worldMetadata.settings = currentSettings;
+                        worldMetadata.lastPlayedTime = std::time(nullptr);
+
+                        // Save camera state
+                        glm::vec3 camPos;
+                        if (cameraMode == CameraMode::FreeFly)
+                            camPos = flyCamera.position();
+                        else if (cameraMode == CameraMode::Character)
+                            camPos = charCamera.position();
+                        else
+                            camPos = chaseCamera.position();
+
+                        worldMetadata.playerPosition = camPos;
+                        worldMetadata.playerYaw = flyCamera.getYaw();
+                        worldMetadata.playerPitch = flyCamera.getPitch();
+                        worldMetadata.cameraMode = static_cast<int>(cameraMode);
+                        worldMetadata.timeOfDay = timeOfDay;
+                        worldMetadata.timePaused = timePaused;
+                        worldMetadata.useLiveTime = useLiveTime;
+
+                        persistence->saveMetadata(worldMetadata);
+
+                        std::cout << "[Auto-save] Saved " << savedCount << " modified chunks" << std::endl;
+                    }
+                }
+            }
+        }
+
         if (kRenderIsolationMode)
         {
             SDL_Delay(10);
@@ -1083,7 +1435,14 @@ int main()
             loadingScreen.render(progress, loadedChunks, targetChunks);
         }
 
+        // Update settings dialog with modified chunks count
+        settingsDialog.setModifiedChunksCount(world->getModifiedChunkCount());
         settingsDialog.render();
+
+        // Render world management dialogs
+        worldSelectionDialog.render(persistence.get());
+        worldNameDialog.render();
+        saveConfirmationDialog.render();
 
         // Chase camera HUD - show when in chase mode
         if (cameraMode == CameraMode::Chase && chaseCameraHUD.isVisible())
@@ -1131,11 +1490,31 @@ int main()
             ImGui::Text("Y: %.1f", camPos.y);
             ImGui::Text("Z: %.1f", camPos.z);
 
+            // Modified chunks count (unsaved changes)
+            ImGui::Separator();
+            int modCount = world->getModifiedChunkCount();
+            if (modCount > 0)
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Unsaved: %d chunk%s", modCount, modCount == 1 ? "" : "s");
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Press F10 to save");
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No unsaved changes");
+            }
+
             ImGui::End();
         }
 
         // Render analog clock in top-left
         analogClock.render(timeOfDay, fbW, fbH);
+
+        // Render game menu (if visible) - should be on top of everything
+        if (gameMenu.isVisible())
+        {
+            gameMenu.setModifiedChunksCount(world->getModifiedChunkCount());
+            gameMenu.render(delta, fbW, fbH);
+        }
 
         imguiManager.render();
 
@@ -1143,6 +1522,17 @@ int main()
     }
 
     // ---- Cleanup ------------------------------------------------------------
+    // Final save on exit
+    std::cout << "Saving world before exit..." << std::endl;
+    int finalSaveCount = world->saveModifiedChunks();
+    if (finalSaveCount > 0)
+    {
+        worldMetadata.settings = currentSettings;
+        worldMetadata.lastPlayedTime = std::time(nullptr);
+        persistence->saveMetadata(worldMetadata);
+        std::cout << "Final save: " << finalSaveCount << " chunks saved" << std::endl;
+    }
+
     imguiManager.shutdown();
     rr.texArray.destroy();
     if (rr.skyVAO) glDeleteVertexArrays(1, &rr.skyVAO);

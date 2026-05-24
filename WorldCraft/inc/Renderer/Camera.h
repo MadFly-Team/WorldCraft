@@ -50,7 +50,11 @@ namespace Renderer
 		// Camera orientation for mode switching
 		float yaw() const { return m_yaw; }
 		float pitch() const { return m_pitch; }
+		float getYaw() const { return m_yaw; }
+		float getPitch() const { return m_pitch; }
 		void setOrientation(float yaw, float pitch) { m_yaw = yaw; m_pitch = pitch; }
+		void setYaw(float yaw) { m_yaw = yaw; }
+		void setPitch(float pitch) { m_pitch = pitch; }
 		void setPosition(glm::vec3 pos) { m_pos = pos; }
 
 	private:
@@ -115,7 +119,11 @@ namespace Renderer
 		// Camera orientation for mode switching
 		float yaw() const { return m_yaw; }
 		float pitch() const { return m_pitch; }
+		float getYaw() const { return m_yaw; }
+		float getPitch() const { return m_pitch; }
 		void setOrientation(float yaw, float pitch) { m_yaw = yaw; m_pitch = pitch; }
+		void setYaw(float yaw) { m_yaw = yaw; }
+		void setPitch(float pitch) { m_pitch = pitch; }
 		void setPosition(glm::vec3 eyePos) { m_pos = eyePos - glm::vec3(0.0f, m_eyeHeight, 0.0f); }
 
 	private:
