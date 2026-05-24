@@ -76,11 +76,23 @@ jobs:
       - name: Set up CMake
         uses: lukka/get-cmake@latest
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install GLAD generator dependencies
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jinja2
+
       - name: Verify CMake and Ninja
         shell: cmd
         run: |
           cmake --version
           ninja --version
+          python --version
 
       - name: Cache doctest external download
         uses: actions/cache@v4
