@@ -102,15 +102,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-doctest-
 
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+
       - name: Install ZLIB via vcpkg
         shell: cmd
         run: |
-          vcpkg install zlib:x64-windows
+          "%VCPKG_INSTALLATION_ROOT%\vcpkg.exe" install zlib:x64-windows
 
       - name: Configure WorldCraft (Release)
         shell: cmd
         run: |
-          cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
+          cmake -B out/build/x64-Release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_TOOLCHAIN_FILE="%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake"
 
       - name: Build WorldCraft (Release)
         shell: cmd
