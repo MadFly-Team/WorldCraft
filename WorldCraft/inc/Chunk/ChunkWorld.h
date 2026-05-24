@@ -5,6 +5,7 @@
 #include <Meshing/ChunkMesher.h>
 #include <WorldGen/TerrainGen.h>
 #include <WorldGen/WorldSettings.h>
+#include <Persistence/WorldPersistence.h>
 
 #include <glm/glm.hpp>
 #include <unordered_map>
@@ -102,7 +103,7 @@ WorkPhase  phase = WorkPhase::Generate;
 class ChunkWorld
 {
 public:
-	explicit ChunkWorld(const WorldGen::WorldSettings& settings);
+	explicit ChunkWorld(const WorldGen::WorldSettings& settings, Persistence::WorldPersistence* persistence = nullptr);
 	~ChunkWorld();
 
 void update(const glm::vec3& cameraPos);
@@ -146,6 +147,13 @@ void update(const glm::vec3& cameraPos);
 	int getLoadedChunkCount() const { return static_cast<int>(m_chunks.size()); }
 	int getTargetChunkCount() const;
 
+	// Persistence operations
+	// Save all modified chunks to disk
+	int saveModifiedChunks();
+
+	// Get number of modified chunks waiting to be saved
+	int getModifiedChunkCount() const { return static_cast<int>(m_modifiedChunks.size()); }
+
 private:
 	WorldGen::WorldSettings m_settings;
 	int  m_renderDist;
@@ -187,6 +195,13 @@ std::vector<std::thread>  m_workers;
 	std::condition_variable m_pauseCV;      // workers block here while paused
 	std::condition_variable m_allPausedCV;  // main thread waits here until all paused
 	int                     m_pausedWorkerCount{ 0 }; // guarded by m_pauseMutex
+
+	// Persistence system
+	Persistence::WorldPersistence* m_persistence;  // Not owned - managed by WorldCraft.cpp
+
+	// Track which chunks have been modified by the player
+	std::unordered_set<ChunkCoord, ChunkCoordHash> m_modifiedChunks;
+	std::mutex m_modifiedChunksMutex;
 
 ChunkCoord toChunkCoord(const glm::vec3& worldPos) const;
 void       enqueueGenerate(const ChunkCoord& coord);

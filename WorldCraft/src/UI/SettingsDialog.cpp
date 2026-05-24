@@ -83,6 +83,11 @@ bool SettingsDialog::render()
 		renderTimeSettings();
 	}
 
+	if (ImGui::CollapsingHeader("World Persistence"))
+	{
+		renderPersistenceSettings();
+	}
+
 	ImGui::Separator();
 	renderGenerateButton();
 
@@ -239,6 +244,15 @@ void SettingsDialog::renderWaterSettings()
 	ImGui::Spacing();
 	ImGui::Checkbox("Enable Water Waves", &m_settings.enableWaterWaves);
 	ImGui::TextDisabled("Visual wave effect on water surfaces (performance impact)");
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+	ImGui::Text("Persistence Settings");
+	ImGui::Spacing();
+
+	ImGui::Checkbox("Enable Auto-Save", &m_settings.enableAutoSave);
+	ImGui::TextDisabled("Automatically save modified chunks every 5 minutes");
 }
 
 void SettingsDialog::renderCameraSettings()
@@ -384,6 +398,72 @@ void SettingsDialog::renderTimeSettings()
 
 	ImGui::Spacing();
 	ImGui::TextDisabled("Note: Real-world time overrides pause and manual time settings");
+}
+
+void SettingsDialog::renderPersistenceSettings()
+{
+	ImGui::Text("World Persistence");
+	ImGui::Spacing();
+
+	// Load last world on startup toggle
+	ImGui::Checkbox("Load Last World on Startup", &m_settings.loadLastWorldOnStartup);
+	ImGui::TextDisabled("Automatically load the most recently played world when starting the game");
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+
+	// Auto-save toggle
+	ImGui::Checkbox("Enable Auto-Save", &m_settings.enableAutoSave);
+	ImGui::TextDisabled("Automatically save modified chunks every 5 minutes");
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+
+	// Show modified chunks count
+	ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Modified Chunks: %d", m_modifiedChunksCount);
+
+	if (m_modifiedChunksCount > 0)
+	{
+		ImGui::TextDisabled("These changes will be saved when you save the world");
+	}
+	else
+	{
+		ImGui::TextDisabled("No unsaved terrain changes");
+	}
+
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
+
+	// Save World button
+	ImVec4 saveColor = m_modifiedChunksCount > 0 
+		? ImVec4(0.3f, 0.7f, 0.3f, 1.0f)  // Green if there are changes
+		: ImVec4(0.4f, 0.4f, 0.4f, 1.0f); // Gray if no changes
+
+	ImGui::PushStyleColor(ImGuiCol_Button, saveColor);
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(saveColor.x * 1.2f, saveColor.y * 1.2f, saveColor.z * 1.2f, saveColor.w));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(saveColor.x * 0.8f, saveColor.y * 0.8f, saveColor.z * 0.8f, saveColor.w));
+
+	if (ImGui::Button("Save World", ImVec2(200.0f, 30.0f)))
+	{
+		if (m_onSaveWorld)
+		{
+			m_onSaveWorld();
+		}
+	}
+
+	ImGui::PopStyleColor(3);
+
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Saves all terrain modifications to disk.\nThe world will automatically load these changes next time.");
+	}
+
+	ImGui::Spacing();
 }
 
 }
