@@ -8,6 +8,8 @@ project(WorldCraftSuite VERSION 0.0.1)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_C_STANDARD 17)
 
+find_package(OpenGL REQUIRED)
+
 include(ExternalProject)
 
 find_package(Git REQUIRED)
@@ -68,6 +70,7 @@ target_include_directories(imgui PUBLIC
   third_party/imgui/backends
 )
 target_link_libraries(imgui PUBLIC SDL2-static)
+target_link_libraries(imgui PUBLIC OpenGL::GL)
 
 #-----------------------------------------------------------------------------
 # add the subdirectories for the library, IDE and testing framework being used
