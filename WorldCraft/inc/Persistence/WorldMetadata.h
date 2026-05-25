@@ -41,6 +41,9 @@ namespace Persistence
 		bool timePaused = false;
 		bool useLiveTime = false;
 
+		// Player inventory state (hotbar slots stored as BlockID integers)
+		std::vector<uint16_t> hotbarSlots;  // 9 slots, each containing a BlockID
+
 		// Statistics
 		uint64_t totalPlayTime = 0;  // Total play time in seconds
 		int modifiedChunkCount = 0;  // Number of chunks with modifications

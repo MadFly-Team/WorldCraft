@@ -236,8 +236,8 @@ void SettingsDialog::renderWaterSettings()
 	if (m_settings.enableWaterFlow)
 	{
 		ImGui::Indent();
-		ImGui::SliderFloat("Flow Rate", &m_settings.waterFlowRate, 0.1f, 2.0f, "%.1f ticks/sec");
-		ImGui::TextDisabled("How fast water spreads (higher = faster)");
+		ImGui::SliderFloat("Flow Rate", &m_settings.waterFlowRate, 2.0f, 10.0f, "%.1f ticks/sec");
+		ImGui::TextDisabled("Controls water speed and lake activation rate");
 		ImGui::Unindent();
 	}
 

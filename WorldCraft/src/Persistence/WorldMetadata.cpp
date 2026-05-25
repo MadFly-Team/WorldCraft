@@ -99,6 +99,16 @@ std::string WorldMetadata::toJSON() const
 	ss << "    \"timeOfDay\": " << timeOfDay << ",\n";
 	ss << "    \"timePaused\": " << (timePaused ? "true" : "false") << ",\n";
 	ss << "    \"useLiveTime\": " << (useLiveTime ? "true" : "false") << "\n";
+	ss << "  },\n";
+
+	// Inventory state
+	ss << "  \"inventory\": {\n";
+	ss << "    \"hotbarSlots\": [";
+	for (size_t i = 0; i < hotbarSlots.size(); ++i) {
+		if (i > 0) ss << ", ";
+		ss << hotbarSlots[i];
+	}
+	ss << "]\n";
 	ss << "  }\n";
 
 	ss << "}\n";
@@ -247,6 +257,27 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		timeOfDay = safeParseFloat("timeOfDay", 0.22f);
 		timePaused = safeParseBool("timePaused", false);
 		useLiveTime = safeParseBool("useLiveTime", false);
+
+		// Parse inventory hotbar slots (backward compatible - if not present, leave empty)
+		std::string hotbarStr = findValue("hotbarSlots");
+		hotbarSlots.clear();
+		if (!hotbarStr.empty()) {
+			try {
+				std::stringstream ss(hotbarStr);
+				char ch;
+				ss >> ch; // skip '['
+
+				uint16_t blockID;
+				while (ss >> blockID) {
+					hotbarSlots.push_back(blockID);
+					ss >> ch; // skip ',' or ']'
+					if (ch == ']') break;
+				}
+			} catch (...) {
+				// If parsing fails, clear slots (will use defaults)
+				hotbarSlots.clear();
+			}
+		}
 
 		return true;
 	}

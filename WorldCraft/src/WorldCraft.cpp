@@ -18,6 +18,10 @@
 #include <UI/WorldSelectionDialog.h>
 #include <UI/WorldNameDialog.h>
 #include <UI/SaveConfirmationDialog.h>
+#include <UI/Hotbar.h>
+#include <UI/RadialMenu.h>
+#include <UI/FabricatorUI.h>
+#include <Inventory/Inventory.h>
 #include <WorldGen/WorldSettings.h>
 #include <Persistence/WorldPersistence.h>
 #include <Utils/Raycast.h>
@@ -26,6 +30,8 @@
 #include <chrono>
 #include <ctime>
 #include <algorithm>
+#include <set>
+#include <tuple>
 
 // ---------------------------------------------------------------------------
 // Window
@@ -591,13 +597,24 @@ int main()
     UI::WorldSelectionDialog worldSelectionDialog;
     UI::WorldNameDialog worldNameDialog;
     UI::SaveConfirmationDialog saveConfirmationDialog;
+    UI::Hotbar hotbar;
+    UI::RadialMenu radialMenu;
+    UI::FabricatorUI fabricatorUI;
     bool isInitialLoadComplete = false;
+
+    // ---- Inventory System ---------------------------------------------------
+    Inventory::PlayerInventory playerInventory;
 
     // ---- Camera System ------------------------------------------------------
     // Dual camera mode: Free-fly (noclip) and Character (walking/jumping)
     enum class CameraMode { FreeFly, Character, Chase };
     CameraMode cameraMode = CameraMode::FreeFly;
     CameraMode previousCameraMode = CameraMode::FreeFly;  // For returning from Chase mode
+
+    // ---- Build Mode System --------------------------------------------------
+    // Toggle between placement and removal modes
+    enum class BuildMode { Placement, Removal };
+    BuildMode buildMode = BuildMode::Placement;
 
     Renderer::FlyCamera flyCamera({ 8.0f, 100.0f, 8.0f });
     Renderer::CharacterCamera charCamera({ 8.0f, 100.0f, 8.0f });
@@ -652,10 +669,16 @@ int main()
     charCamera.setYaw(worldMetadata.playerYaw);
     charCamera.setPitch(worldMetadata.playerPitch);
 
+    // Restore inventory from saved metadata
+    playerInventory.importHotbar(worldMetadata.hotbarSlots);
+
     // ---- World --------------------------------------------------------------
     // Start with settings from metadata
     WorldGen::WorldSettings currentSettings = worldMetadata.settings;
     auto world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
+
+    // Sync loaded settings to the settings dialog UI
+    settingsDialog.setSettings(currentSettings);
 
     // ---- Water Simulation ---------------------------------------------------
     World::WaterSimulation waterSim;
@@ -719,7 +742,8 @@ int main()
     settingsDialog.setSaveWorldCallback([&]() {
         int savedCount = world->saveModifiedChunks();
 
-        // Always update metadata with current state
+        // Always update metadata with current state from settings dialog
+        currentSettings = settingsDialog.getSettings();
         worldMetadata.settings = currentSettings;
         worldMetadata.lastPlayedTime = std::time(nullptr);
 
@@ -741,6 +765,9 @@ int main()
         worldMetadata.timeOfDay = timeOfDay;
         worldMetadata.timePaused = timePaused;
         worldMetadata.useLiveTime = useLiveTime;
+
+        // Save inventory state
+        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
 
         persistence->saveMetadata(worldMetadata);
 
@@ -766,7 +793,8 @@ int main()
         {
             int savedCount = world->saveModifiedChunks();
 
-            // Update metadata with current state
+            // Update metadata with current state from settings dialog
+            currentSettings = settingsDialog.getSettings();
             worldMetadata.settings = currentSettings;
             worldMetadata.lastPlayedTime = std::time(nullptr);
 
@@ -790,6 +818,9 @@ int main()
             worldMetadata.timeOfDay = timeOfDay;
             worldMetadata.timePaused = timePaused;
             worldMetadata.useLiveTime = useLiveTime;
+
+            // Save inventory state
+            worldMetadata.hotbarSlots = playerInventory.exportHotbar();
 
             persistence->saveMetadata(worldMetadata);
 
@@ -868,11 +899,13 @@ int main()
     worldSelectionDialog.setLoadWorldCallback([&](const std::string& worldName) {
         std::cout << "[WorldSelection] Loading world: " << worldName << std::endl;
 
-        // Save current world before switching
+        bool isReloadingCurrent = (persistence->getCurrentWorldName() == worldName);
+
+        // Save current world before switching/reloading
         if (persistence->isWorldOpen())
         {
             int savedCount = world->saveModifiedChunks();
-            if (savedCount > 0)
+            if (savedCount > 0 || isReloadingCurrent)
             {
                 // Save current camera state
                 glm::vec3 camPos;
@@ -892,8 +925,23 @@ int main()
                 worldMetadata.useLiveTime = useLiveTime;
                 worldMetadata.lastPlayedTime = std::time(nullptr);
 
+                // Save current settings from dialog
+                currentSettings = settingsDialog.getSettings();
+                worldMetadata.settings = currentSettings;
+
+                // Save inventory state
+                worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+
                 persistence->saveMetadata(worldMetadata);
-                std::cout << "[WorldSelection] Saved " << savedCount << " chunks from previous world" << std::endl;
+
+                if (isReloadingCurrent)
+                {
+                    std::cout << "[WorldSelection] Saved current state before reload" << std::endl;
+                }
+                else
+                {
+                    std::cout << "[WorldSelection] Saved " << savedCount << " chunks from previous world" << std::endl;
+                }
             }
         }
 
@@ -930,6 +978,9 @@ int main()
             timePaused = worldMetadata.timePaused;
             useLiveTime = worldMetadata.useLiveTime;
             settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
+
+            // Restore inventory
+            playerInventory.importHotbar(worldMetadata.hotbarSlots);
         }
         else
         {
@@ -990,11 +1041,12 @@ int main()
         }
 
         // Control mouse cursor and relative mouse mode based on dialog/menu state or loading
-        bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen();
+        bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen() || fabricatorUI.isOpen();
         bool menuOpen = gameMenu.isVisible();
+        bool radialOpen = radialMenu.isVisible();
         bool loading = loadingScreen.isActive();
-        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || loading) ? SDL_FALSE : SDL_TRUE);
-        SDL_ShowCursor((dialogOpen || menuOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
+        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || radialOpen || loading) ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor((dialogOpen || menuOpen || radialOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
 
         // Poll SDL events
         SDL_Event event;
@@ -1030,6 +1082,25 @@ int main()
                     // F11 toggles settings dialog
                     settingsDialog.toggle();
                 }
+                else if (event.key.keysym.sym == SDLK_i && !menuOpen && !loading)
+                {
+                    // 'I' key toggles fabricator inventory UI
+                    fabricatorUI.toggle();
+                }
+                else if (event.key.keysym.sym == SDLK_e && !dialogOpen)
+                {
+                    // 'E' key toggles build mode (Placement/Removal)
+                    if (buildMode == BuildMode::Placement)
+                    {
+                        buildMode = BuildMode::Removal;
+                        std::cout << "Build Mode: REMOVAL" << std::endl;
+                    }
+                    else
+                    {
+                        buildMode = BuildMode::Placement;
+                        std::cout << "Build Mode: PLACEMENT" << std::endl;
+                    }
+                }
                 else if (event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT))
                 {
                     // Alt+Enter toggles fullscreen (standard game shortcut)
@@ -1060,6 +1131,20 @@ int main()
                     // 'T' key toggles character torch light
                     characterTorchEnabled = !characterTorchEnabled;
                 }
+                else if (event.key.keysym.sym == SDLK_q && !dialogOpen && !menuOpen)
+                {
+                    // 'Q' key opens radial menu (hold to use)
+                    if (!radialMenu.isVisible())
+                    {
+                        radialMenu.show();
+                    }
+                }
+                // Hotbar number keys (1-9)
+                else if (event.key.keysym.sym >= SDLK_1 && event.key.keysym.sym <= SDLK_9 && !dialogOpen)
+                {
+                    int slot = event.key.keysym.sym - SDLK_1;  // 0-8
+                    playerInventory.setSelectedSlot(slot);
+                }
                 else if (event.key.keysym.sym == SDLK_ESCAPE && !dialogOpen)
                 {
                     // ESC closes menu if open, otherwise quits
@@ -1076,6 +1161,15 @@ int main()
                 {
                     // Handle menu navigation
                     gameMenu.handleKeyPress(event.key.keysym.sym);
+                }
+            }
+            else if (event.type == SDL_KEYUP)
+            {
+                // Q key release - close radial menu and select hovered material
+                if (event.key.keysym.sym == SDLK_q && radialMenu.isVisible())
+                {
+                    radialMenu.selectHoveredMaterial(playerInventory);
+                    radialMenu.hide();
                 }
             }
             else if (event.type == SDL_MOUSEMOTION && gameMenu.isVisible())
@@ -1106,7 +1200,7 @@ int main()
         }
 
         // Only update camera when not loading and (dialog/menu is closed OR chase mode is active)
-        if (!loading && !menuOpen && (!dialogOpen || cameraMode == CameraMode::Chase))
+        if (!loading && !menuOpen && !radialOpen && (!dialogOpen || cameraMode == CameraMode::Chase))
         {
             if (cameraMode == CameraMode::FreeFly)
                 flyCamera.update(window, delta);
@@ -1142,7 +1236,7 @@ int main()
 
         // ---- Block targeting and removal (Character camera only) ----------------
         std::optional<Utils::RaycastHit> targetBlock;
-        if (!loading && !dialogOpen && cameraMode == CameraMode::Character && world)
+        if (!loading && !dialogOpen && !radialOpen && cameraMode == CameraMode::Character && world)
         {
             // Perform raycast from camera eye position along look direction
             glm::vec3 rayOrigin = charCamera.position();
@@ -1175,39 +1269,125 @@ int main()
                     continue;
                 }
 
+                // Check if we're removing water (need to clean up flow)
+                Voxel::BlockID removedBlock = world->getBlockAt(
+                    static_cast<float>(blockPos.x),
+                    static_cast<float>(blockPos.y),
+                    static_cast<float>(blockPos.z));
+                bool wasWater = (removedBlock == Voxel::BlockID::Water);
+
                 world->setBlockAt(static_cast<float>(blockPos.x),
                                  static_cast<float>(blockPos.y),
                                  static_cast<float>(blockPos.z),
                                  Voxel::BlockID::Air);
 
-                // Mark surrounding water blocks for flow updates
+                // If we removed water, clean up its source and flow
+                if (wasWater && currentSettings.enableWaterFlow)
+                {
+                    waterSim.removeSource(blockPos.x, blockPos.y, blockPos.z, world.get());
+                }
+
+                // Notify water simulation that a block changed - nearby water may need to flow
                 if (currentSettings.enableWaterFlow)
                 {
-                    // Check all 6 neighbors for water
-                    const int dx[] = { 1, -1, 0, 0, 0, 0 };
-                    const int dy[] = { 0, 0, 1, -1, 0, 0 };
-                    const int dz[] = { 0, 0, 0, 0, 1, -1 };
+                    // When a block is removed, scan for ALL nearby water blocks
+                    // (including world-generated lakes/oceans) and register them as sources
+                    // This ensures large bodies of water can flow when terrain changes
 
-                    for (int i = 0; i < 6; ++i)
+                    // Scan a 7x7x7 cube centered on the removed block
+                    const int SCAN_RADIUS = 3;
+
+                    for (int dy = -SCAN_RADIUS; dy <= SCAN_RADIUS; ++dy)
                     {
-                        int nx = blockPos.x + dx[i];
-                        int ny = blockPos.y + dy[i];
-                        int nz = blockPos.z + dz[i];
-
-                        Voxel::BlockID neighborBlock = world->getBlockAt(
-                            static_cast<float>(nx),
-                            static_cast<float>(ny),
-                            static_cast<float>(nz));
-
-                        if (neighborBlock == Voxel::BlockID::Water)
+                        for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; ++dx)
                         {
-                            waterSim.markForUpdate(nx, ny, nz);
+                            for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; ++dz)
+                            {
+                                int checkX = blockPos.x + dx;
+                                int checkY = blockPos.y + dy;
+                                int checkZ = blockPos.z + dz;
+
+                                Voxel::BlockID block = world->getBlockAt(
+                                    static_cast<float>(checkX),
+                                    static_cast<float>(checkY),
+                                    static_cast<float>(checkZ)
+                                );
+
+                                // If we find water and it doesn't already have a source, register it
+                                if (block == Voxel::BlockID::Water && !waterSim.hasSource(checkX, checkY, checkZ))
+                                {
+                                    waterSim.registerSource(checkX, checkY, checkZ);
+                                }
+                            }
                         }
                     }
+
+                    waterSim.notifyBlockChange(blockPos.x, blockPos.y, blockPos.z);
+
+                    // Force an immediate water update after block removal to start flow instantly
+                    glm::vec3 playerPos;
+                    if (cameraMode == CameraMode::FreeFly)
+                        playerPos = flyCamera.position();
+                    else if (cameraMode == CameraMode::Character)
+                        playerPos = charCamera.position();
+                    else
+                        playerPos = chaseCamera.position();
+
+                    waterSim.update(world.get(), playerPos, 64.0f);
                 }
             }
 
             wasRightPressed = isRightPressed;
+
+            // Handle left mouse button to place block
+            static bool wasLeftPressed = false;
+            bool isLeftPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+
+            if (isLeftPressed && !wasLeftPressed && targetBlock.has_value())
+            {
+                // Place block adjacent to targeted block (in the direction of the hit face)
+                const glm::ivec3& hitBlock = targetBlock->blockPos;
+                Voxel::FaceDir hitFace = targetBlock->face;
+
+                // Calculate placement position using face offsets
+                glm::ivec3 placePos = hitBlock;
+                int faceIdx = static_cast<int>(hitFace);
+                placePos.x += Voxel::FaceOffsetX[faceIdx];
+                placePos.y += Voxel::FaceOffsetY[faceIdx];
+                placePos.z += Voxel::FaceOffsetZ[faceIdx];
+
+                // Don't place blocks in the same position as the player
+                glm::vec3 playerPos = charCamera.position();
+                glm::ivec3 playerBlockPos(
+                    static_cast<int>(std::floor(playerPos.x)),
+                    static_cast<int>(std::floor(playerPos.y)),
+                    static_cast<int>(std::floor(playerPos.z))
+                );
+
+                // Check if placement would overlap player (current block or block above)
+                bool wouldOverlapPlayer = (placePos == playerBlockPos) ||
+                                         (placePos == playerBlockPos + glm::ivec3(0, 1, 0));
+
+                if (!wouldOverlapPlayer)
+                {
+                    // Get selected block from inventory
+                    Voxel::BlockID selectedBlock = playerInventory.getSelectedBlockID();
+
+                    // Place the block
+                    world->setBlockAt(static_cast<float>(placePos.x),
+                                     static_cast<float>(placePos.y),
+                                     static_cast<float>(placePos.z),
+                                     selectedBlock);
+
+                    // If placing water, register it as a source
+                    if (selectedBlock == Voxel::BlockID::Water)
+                    {
+                        waterSim.registerSource(placePos.x, placePos.y, placePos.z);
+                    }
+                }
+            }
+
+            wasLeftPressed = isLeftPressed;
         }
 
         // ---- Water Simulation Tick ----------------------------------------------
@@ -1229,7 +1409,11 @@ int main()
                 else
                     playerPos = chaseCamera.position();
 
-                waterSim.update(world.get(), playerPos, 64.0f); // Update water within 64 blocks
+                // Scale discovery rate with flow rate setting
+                // Higher flow rate = discover more sources per tick
+                // Range: 0.1 to 2.0 → 1 to 20 sources per tick
+                int maxNewSources = static_cast<int>(currentSettings.waterFlowRate * 10.0f);
+                waterSim.update(world.get(), playerPos, 64.0f, maxNewSources); // Update water within 64 blocks
             }
         }
 
@@ -1281,7 +1465,8 @@ int main()
                     int savedCount = world->saveModifiedChunks();
                     if (savedCount > 0)
                     {
-                        // Update metadata with current state
+                        // Update metadata with current state from settings dialog
+                        currentSettings = settingsDialog.getSettings();
                         worldMetadata.settings = currentSettings;
                         worldMetadata.lastPlayedTime = std::time(nullptr);
 
@@ -1301,6 +1486,9 @@ int main()
                         worldMetadata.timeOfDay = timeOfDay;
                         worldMetadata.timePaused = timePaused;
                         worldMetadata.useLiveTime = useLiveTime;
+
+                        // Save inventory state
+                        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
 
                         persistence->saveMetadata(worldMetadata);
 
@@ -1342,6 +1530,14 @@ int main()
         }
 
         glViewport(0, 0, fbW, fbH);
+
+        // Update radial menu if visible (needs fbW, fbH)
+        if (radialMenu.isVisible())
+        {
+            int mouseX, mouseY;
+            SDL_GetMouseState(&mouseX, &mouseY);
+            radialMenu.update(playerInventory, static_cast<float>(mouseX), static_cast<float>(mouseY), fbW, fbH);
+        }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1417,10 +1613,49 @@ int main()
         // ---- Block highlight (wireframe cube) -----------------------------------
         if (targetBlock.has_value())
         {
-            // Render wireframe outline around targeted block
             const glm::mat4 mvp = proj * view;
-            const glm::vec4 highlightColor(1.0f, 1.0f, 1.0f, 0.5f);  // White, semi-transparent
-            rr.wireframeCube.render(targetBlock->blockPos, mvp, highlightColor);
+
+            // In Removal mode: show white highlight on target block
+            if (buildMode == BuildMode::Removal)
+            {
+                const glm::vec4 highlightColor(1.0f, 1.0f, 1.0f, 0.8f);  // White, more opaque
+                rr.wireframeCube.render(targetBlock->blockPos, mvp, highlightColor);
+            }
+            // In Placement mode: show ghost block preview
+            else if (buildMode == BuildMode::Placement && !dialogOpen)
+            {
+                // Calculate placement position using face offsets
+                glm::ivec3 placePos = targetBlock->blockPos;
+                int faceIdx = static_cast<int>(targetBlock->face);
+                placePos.x += Voxel::FaceOffsetX[faceIdx];
+                placePos.y += Voxel::FaceOffsetY[faceIdx];
+                placePos.z += Voxel::FaceOffsetZ[faceIdx];
+
+                // Check if placement is valid (not overlapping player)
+                glm::vec3 playerPos = charCamera.position();
+                glm::ivec3 playerBlockPos(
+                    static_cast<int>(std::floor(playerPos.x)),
+                    static_cast<int>(std::floor(playerPos.y)),
+                    static_cast<int>(std::floor(playerPos.z))
+                );
+
+                bool wouldOverlapPlayer = (placePos == playerBlockPos) ||
+                                         (placePos == playerBlockPos + glm::ivec3(0, 1, 0));
+
+                // Render preview with color indicating validity
+                if (wouldOverlapPlayer)
+                {
+                    // Red ghost for invalid placement
+                    const glm::vec4 invalidColor(1.0f, 0.0f, 0.0f, 0.6f);
+                    rr.wireframeCube.render(placePos, mvp, invalidColor);
+                }
+                else
+                {
+                    // Green ghost for valid placement
+                    const glm::vec4 validColor(0.0f, 1.0f, 0.0f, 0.6f);
+                    rr.wireframeCube.render(placePos, mvp, validColor);
+                }
+            }
         }
 
         // ---- ImGui overlay --------------------------------------------------
@@ -1443,6 +1678,9 @@ int main()
         worldSelectionDialog.render(persistence.get());
         worldNameDialog.render();
         saveConfirmationDialog.render();
+
+        // Render fabricator UI (inventory management)
+        fabricatorUI.render(playerInventory);
 
         // Chase camera HUD - show when in chase mode
         if (cameraMode == CameraMode::Chase && chaseCameraHUD.isVisible())
@@ -1509,6 +1747,45 @@ int main()
         // Render analog clock in top-left
         analogClock.render(timeOfDay, fbW, fbH);
 
+        // Render hotbar (always visible except during loading)
+        if (!loading)
+        {
+            hotbar.render(playerInventory, fbW, fbH);
+
+            // Render build mode indicator above hotbar
+            ImGui::SetNextWindowPos(ImVec2(fbW * 0.5f, fbH - 120), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowBgAlpha(0.0f); // Transparent background
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+
+            ImGui::Begin("BuildModeIndicator", nullptr, 
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | 
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | 
+                ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize);
+
+            // Mode text with color coding
+            if (buildMode == BuildMode::Placement)
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f)); // Green
+                ImGui::Text("MODE: PLACEMENT");
+            }
+            else
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Red
+                ImGui::Text("MODE: REMOVAL");
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::End();
+            ImGui::PopStyleVar(2);
+        }
+
+        // Render radial menu (if visible) - on top of hotbar
+        if (radialMenu.isVisible())
+        {
+            radialMenu.render(fbW, fbH);
+        }
+
         // Render game menu (if visible) - should be on top of everything
         if (gameMenu.isVisible())
         {
@@ -1527,8 +1804,14 @@ int main()
     int finalSaveCount = world->saveModifiedChunks();
     if (finalSaveCount > 0)
     {
+        // Update metadata with current state from settings dialog
+        currentSettings = settingsDialog.getSettings();
         worldMetadata.settings = currentSettings;
         worldMetadata.lastPlayedTime = std::time(nullptr);
+
+        // Save inventory state
+        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+
         persistence->saveMetadata(worldMetadata);
         std::cout << "Final save: " << finalSaveCount << " chunks saved" << std::endl;
     }

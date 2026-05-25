@@ -5,60 +5,104 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
+#include <queue>
 
 namespace World
 {
 
-// Simple water flow simulation system
-// Water spreads from source blocks into adjacent air spaces
+// Realistic water flow simulation system
+// Each source produces 15 water blocks that flow dynamically
+// Water flows down first, then horizontally, and stops when blocked or hits other water
 class WaterSimulation
 {
 public:
 	WaterSimulation() = default;
 
 	// Update water simulation for one tick
-	// Returns number of blocks modified
-	int update(Chunk::ChunkWorld* world, const glm::vec3& playerPos, float maxDistance);
+	// Returns number of blocks that moved
+	// maxNewSources: maximum number of new sources to discover per update (0 = unlimited)
+	int update(Chunk::ChunkWorld* world, const glm::vec3& playerPos, float maxDistance, int maxNewSources = 5);
 
-	// Mark a position for water flow check (called when blocks are removed near water)
-	void markForUpdate(int x, int y, int z);
+	// Register a new water source block (player-placed water)
+	void registerSource(int x, int y, int z);
 
-	// Clear all pending updates
+	// Check if a position already has a source
+	bool hasSource(int x, int y, int z) const;
+
+	// Remove a water source and all its flowing water
+	void removeSource(int x, int y, int z, Chunk::ChunkWorld* world);
+
+	// Notify water simulation that a block was removed/changed near water
+	// This will reactivate nearby settled water blocks
+	void notifyBlockChange(int x, int y, int z);
+
+	// Clear all water simulation state
 	void clear();
 
 private:
-	struct WaterUpdate
+	struct Position
 	{
 		int x, y, z;
-		bool operator==(const WaterUpdate& other) const
+
+		bool operator==(const Position& other) const
 		{
 			return x == other.x && y == other.y && z == other.z;
 		}
-	};
 
-	struct WaterUpdateHash
-	{
-		std::size_t operator()(const WaterUpdate& u) const
+		bool operator<(const Position& other) const
 		{
-			// Simple hash combining x, y, z
-			return std::hash<int>()(u.x) ^ 
-				   (std::hash<int>()(u.y) << 1) ^ 
-				   (std::hash<int>()(u.z) << 2);
+			if (x != other.x) return x < other.x;
+			if (y != other.y) return y < other.y;
+			return z < other.z;
 		}
 	};
 
-	// Pending water updates (positions where water might flow)
-	std::unordered_set<WaterUpdate, WaterUpdateHash> m_pendingUpdates;
+	struct PositionHash
+	{
+		std::size_t operator()(const Position& p) const
+		{
+			return std::hash<int>()(p.x) ^ 
+				   (std::hash<int>()(p.y) << 1) ^ 
+				   (std::hash<int>()(p.z) << 2);
+		}
+	};
 
-	// Try to flow water from (x,y,z) to adjacent air blocks
-	void tryFlowFrom(Chunk::ChunkWorld* world, int x, int y, int z, 
-					 std::vector<WaterUpdate>& newUpdates);
+	// Represents a single flowing water block
+	struct FlowingWater
+	{
+		Position pos;           // Current position
+		Position sourcePos;     // Which source this came from
+		int blockNumber;        // Which block (0-4) from the source
+		bool isSettled;         // Has this block stopped moving?
+		Position pushedFrom;    // Position of the block pushing this one (or itself if source)
+		bool hasPush;           // Is this block being pushed?
+		int lastDx;             // Last horizontal direction moved (-1, 0, or 1)
+		int lastDz;             // Last horizontal direction moved (-1, 0, or 1)
+	};
+
+	// Each source tracks its flowing water blocks
+	struct WaterSource
+	{
+		Position pos;
+		std::vector<FlowingWater> flowingBlocks;  // 15 blocks per source
+		bool needsUpdate;
+	};
+
+	// Map of source positions to their water data
+	std::unordered_map<Position, WaterSource, PositionHash> m_sources;
+
+	// Map of all water block positions with count (for quick lookup)
+	std::unordered_map<Position, int, PositionHash> m_waterPositions;
+
+	// Try to move a single water block (returns true if it moved)
+	bool tryMoveWater(FlowingWater& water, Chunk::ChunkWorld* world);
 
 	// Check if a position is air (can accept water flow)
 	bool isAir(Chunk::ChunkWorld* world, int x, int y, int z) const;
 
-	// Check if a position is water
-	bool isWater(Chunk::ChunkWorld* world, int x, int y, int z) const;
+	// Check if a position has water (including from any source)
+	bool hasWater(const Position& pos) const;
 };
 
 } // namespace World
