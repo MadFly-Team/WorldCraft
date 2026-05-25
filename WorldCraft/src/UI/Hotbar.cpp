@@ -14,8 +14,8 @@ void Hotbar::render(const Inventory::PlayerInventory& inventory, int screenWidth
 	if (!m_visible)
 		return;
 
-	// Calculate total width of hotbar
-	constexpr int numSlots = Inventory::PlayerInventory::HOTBAR_SIZE;
+	// Calculate total width of hotbar based on current capacity
+	int numSlots = inventory.getCurrentCapacity();
 	float totalWidth = (SLOT_SIZE * numSlots) + (SLOT_PADDING * (numSlots - 1));
 
 	// Center horizontally, position at bottom with padding
@@ -49,7 +49,24 @@ void Hotbar::render(const Inventory::PlayerInventory& inventory, int screenWidth
 	{
 		float slotX = startX + i * (SLOT_SIZE + SLOT_PADDING);
 		const Inventory::Material& material = inventory.getMaterial(i);
-		renderSlot(i, material, i == selectedSlot, slotX, startY);
+		const Inventory::InventorySlot& slot = inventory.getSlot(i);
+		renderSlot(i, material, slot, i == selectedSlot, slotX, startY);
+	}
+
+	// Display capacity info above hotbar (if expanded beyond base)
+	if (inventory.getCurrentCapacity() > Inventory::PlayerInventory::BASE_SLOTS || 
+		inventory.canExpandInventory())
+	{
+		char capacityText[64];
+		snprintf(capacityText, sizeof(capacityText), "Inventory: %d/%d slots", 
+				 inventory.getCurrentCapacity(), inventory.getMaxCapacity());
+
+		ImVec2 textSize = ImGui::CalcTextSize(capacityText);
+		ImVec2 textPos(startX + totalWidth * 0.5f - textSize.x * 0.5f, startY - textSize.y - 8.0f);
+
+		// Draw text shadow
+		drawList->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 200), capacityText);
+		drawList->AddText(textPos, IM_COL32(0, 200, 255, 255), capacityText);
 	}
 
 	ImGui::End();
@@ -58,7 +75,7 @@ void Hotbar::render(const Inventory::PlayerInventory& inventory, int screenWidth
 }
 
 void Hotbar::renderSlot(int slotIndex, const Inventory::Material& material, 
-						bool isSelected, float posX, float posY)
+						const Inventory::InventorySlot& slot, bool isSelected, float posX, float posY)
 {
 	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
 
@@ -90,8 +107,8 @@ void Hotbar::renderSlot(int slotIndex, const Inventory::Material& material,
 	ImVec2 textPos(posX + 4.0f, posY + 2.0f);
 	drawList->AddText(textPos, IM_COL32(200, 200, 200, 255), slotNumText);
 
-	// Draw material name if not empty
-	if (!material.isEmpty())
+	// Draw material if slot has items
+	if (!slot.isEmpty())
 	{
 		// Material icon placeholder (colored square representing block type)
 		ImVec2 iconMin(posX + SLOT_SIZE * 0.25f, posY + SLOT_SIZE * 0.3f);
@@ -113,6 +130,20 @@ void Hotbar::renderSlot(int slotIndex, const Inventory::Material& material,
 		}
 
 		drawList->AddRectFilled(iconMin, iconMax, iconColor, 2.0f);
+
+		// Draw stack count in bottom-right corner
+		if (slot.stackCount > 1)
+		{
+			char stackText[16];
+			snprintf(stackText, sizeof(stackText), "%d", slot.stackCount);
+			ImVec2 stackTextSize = ImGui::CalcTextSize(stackText);
+			ImVec2 stackPos(posX + SLOT_SIZE - stackTextSize.x - 4.0f, 
+							posY + SLOT_SIZE - stackTextSize.y - 2.0f);
+
+			// Draw text shadow
+			drawList->AddText(ImVec2(stackPos.x + 1, stackPos.y + 1), IM_COL32(0, 0, 0, 255), stackText);
+			drawList->AddText(stackPos, IM_COL32(255, 255, 255, 255), stackText);
+		}
 
 		// Material name below slot (only for selected)
 		if (isSelected)

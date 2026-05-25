@@ -31,7 +31,7 @@ private:
 
 	// Render a single hotbar slot
 	void renderSlot(int slotIndex, const Inventory::Material& material, 
-					bool isSelected, float posX, float posY);
+					const Inventory::InventorySlot& slot, bool isSelected, float posX, float posY);
 };
 
 } // namespace UI

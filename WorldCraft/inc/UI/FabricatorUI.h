@@ -1,12 +1,13 @@
 #pragma once
 
 #include <Inventory/Inventory.h>
+#include <Crafting/Blueprint.h>
 
 namespace UI
 {
 
 // ---------------------------------------------------------------------------
-// FabricatorUI - Full inventory management screen (Right-click in air)
+// FabricatorUI - Blueprint crafting and inventory management screen
 // ---------------------------------------------------------------------------
 class FabricatorUI
 {
@@ -16,6 +17,7 @@ public:
 	// Show/hide the fabricator UI
 	void show();
 	void hide();
+	void close() { m_isOpen = false; }
 	bool isOpen() const { return m_isOpen; }
 	void toggle() { m_isOpen = !m_isOpen; }
 
@@ -24,20 +26,21 @@ public:
 
 private:
 	bool m_isOpen;
-	Inventory::MaterialCategory m_selectedCategory;
+	Crafting::BlueprintRarity m_selectedRarity;
 
 	// UI state
-	int m_hoveredMaterialIndex;
-	int m_hoveredHotbarSlot;
+	int m_hoveredBlueprintIndex;
+	const Crafting::Blueprint* m_selectedBlueprint;
 
-	// Render category list
-	void renderCategoryList();
+	// Render rarity tier list
+	void renderRarityList();
 
-	// Render material grid for selected category
-	void renderMaterialGrid(Inventory::PlayerInventory& inventory);
+	// Render blueprint grid for selected rarity
+	void renderBlueprintGrid(Inventory::PlayerInventory& inventory);
 
-	// Render hotbar slots at bottom
-	void renderHotbarSlots(Inventory::PlayerInventory& inventory);
+	// Render crafting panel (selected blueprint + craft button)
+	void renderCraftingPanel(Inventory::PlayerInventory& inventory);
 };
 
 } // namespace UI
+

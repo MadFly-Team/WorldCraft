@@ -1,4 +1,5 @@
 #include <Inventory/Inventory.h>
+#include <Persistence/WorldMetadata.h>
 #include <algorithm>
 
 namespace Inventory
@@ -9,14 +10,34 @@ std::vector<Material> PlayerInventory::s_allMaterials;
 
 PlayerInventory::PlayerInventory()
 	: m_selectedSlot(0)
+	, m_currentCapacity(BASE_SLOTS)  // Start with 10 slots
 {
 	initializeMaterialDatabase();
 	initializeDefaultHotbar();
+
+	// Unlock all blueprints by default for testing/gameplay
+	m_blueprints.unlockAllBlueprints();
+}
+
+bool PlayerInventory::expandInventory(int additionalSlots)
+{
+	if (!canExpandInventory())
+		return false;
+
+	int newCapacity = std::min(m_currentCapacity + additionalSlots, MAX_SLOTS);
+
+	if (newCapacity > m_currentCapacity)
+	{
+		m_currentCapacity = newCapacity;
+		return true;
+	}
+
+	return false;
 }
 
 void PlayerInventory::setSelectedSlot(int slot)
 {
-	if (slot >= 0 && slot < HOTBAR_SIZE)
+	if (slot >= 0 && slot < m_currentCapacity)  // Use dynamic capacity
 	{
 		m_selectedSlot = slot;
 	}
@@ -24,17 +45,17 @@ void PlayerInventory::setSelectedSlot(int slot)
 
 void PlayerInventory::selectNextSlot()
 {
-	m_selectedSlot = (m_selectedSlot + 1) % HOTBAR_SIZE;
+	m_selectedSlot = (m_selectedSlot + 1) % m_currentCapacity;
 }
 
 void PlayerInventory::selectPrevSlot()
 {
-	m_selectedSlot = (m_selectedSlot - 1 + HOTBAR_SIZE) % HOTBAR_SIZE;
+	m_selectedSlot = (m_selectedSlot - 1 + m_currentCapacity) % m_currentCapacity;
 }
 
 const Material& PlayerInventory::getMaterial(int slot) const
 {
-	if (slot >= 0 && slot < HOTBAR_SIZE)
+	if (slot >= 0 && slot < m_currentCapacity)
 		return m_hotbar[slot];
 
 	static Material empty;
@@ -44,7 +65,7 @@ const Material& PlayerInventory::getMaterial(int slot) const
 Material& PlayerInventory::getMaterial(int slot)
 {
 	static Material empty;
-	if (slot >= 0 && slot < HOTBAR_SIZE)
+	if (slot >= 0 && slot < m_currentCapacity)
 		return m_hotbar[slot];
 	return empty;
 }
@@ -105,7 +126,7 @@ std::string PlayerInventory::getCategoryName(MaterialCategory category)
 
 void PlayerInventory::initializeDefaultHotbar()
 {
-	// Start with some common materials in the hotbar
+	// Start with some common materials in the first 10 slots
 	m_hotbar[0] = Material(Voxel::BlockID::Stone,    "Durasteel Panel",  "Standard structural plating", MaterialCategory::Structure);
 	m_hotbar[1] = Material(Voxel::BlockID::Dirt,     "Composite Block",  "Basic building material",     MaterialCategory::Structure);
 	m_hotbar[2] = Material(Voxel::BlockID::Grass,    "Bio-Surface",      "Living terrain surface",      MaterialCategory::Natural);
@@ -115,6 +136,13 @@ void PlayerInventory::initializeDefaultHotbar()
 	m_hotbar[6] = Material(Voxel::BlockID::GoldOre,  "Energy Ore",       "Power-infused crystal",       MaterialCategory::Energy);
 	m_hotbar[7] = Material(Voxel::BlockID::Water,    "Liquid Tank",      "Contained fluid block",       MaterialCategory::Tech);
 	m_hotbar[8] = Material(Voxel::BlockID::Torch,    "Plasma Emitter",   "Light source",                MaterialCategory::Lighting);
+	m_hotbar[9] = Material(Voxel::BlockID::Obsidian, "Hardened Alloy",   "Ultra-dense material",        MaterialCategory::Structure);
+
+	// Initialize all inventory slots as empty (will be filled by pickups)
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		m_slots[i] = InventorySlot();
+	}
 }
 
 void PlayerInventory::initializeMaterialDatabase()
@@ -210,6 +238,271 @@ void PlayerInventory::importHotbar(const std::vector<uint16_t>& blockIDs)
 		{
 			m_hotbar[i] = Material(blockID, "Unknown Material", "Undefined block", MaterialCategory::Structure);
 		}
+	}
+}
+
+// ---- New pickup/collection system implementation ----
+
+int PlayerInventory::addPickedUpItem(Voxel::BlockID blockID, int count)
+{
+	if (blockID == Voxel::BlockID::Air || count <= 0)
+		return 0;
+
+	int remainingToAdd = count;
+
+	// First pass: try to stack with existing slots (within current capacity)
+	for (int i = 0; i < m_currentCapacity && remainingToAdd > 0; ++i)
+	{
+		if (m_slots[i].canStack(blockID))
+		{
+			int spaceInSlot = 100 - m_slots[i].stackCount;
+			int toAdd = std::min(remainingToAdd, spaceInSlot);
+			m_slots[i].stackCount += toAdd;
+			remainingToAdd -= toAdd;
+		}
+	}
+
+	// Second pass: fill empty slots (within current capacity)
+	for (int i = 0; i < m_currentCapacity && remainingToAdd > 0; ++i)
+	{
+		if (m_slots[i].isEmpty())
+		{
+			int toAdd = std::min(remainingToAdd, 100);
+			m_slots[i] = InventorySlot(blockID, toAdd);
+
+			// Also update the material reference for that slot
+			for (const auto& mat : s_allMaterials)
+			{
+				if (mat.blockID == blockID)
+				{
+					m_hotbar[i] = mat;
+					break;
+				}
+			}
+
+			remainingToAdd -= toAdd;
+		}
+	}
+
+	return count - remainingToAdd;  // Return how many were actually added
+}
+
+const InventorySlot& PlayerInventory::getSlot(int index) const
+{
+	static InventorySlot empty;
+	if (index >= 0 && index < MAX_SLOTS)
+		return m_slots[index];
+	return empty;
+}
+
+InventorySlot& PlayerInventory::getSlot(int index)
+{
+	static InventorySlot empty;
+	if (index >= 0 && index < MAX_SLOTS)
+		return m_slots[index];
+	return empty;
+}
+
+bool PlayerInventory::hasSpaceFor(Voxel::BlockID blockID, int count) const
+{
+	int availableSpace = 0;
+
+	// Count space in existing stacks (within current capacity)
+	for (int i = 0; i < m_currentCapacity; ++i)
+	{
+		if (m_slots[i].canStack(blockID))
+		{
+			availableSpace += (100 - m_slots[i].stackCount);
+		}
+		else if (m_slots[i].isEmpty())
+		{
+			availableSpace += 100;
+		}
+	}
+
+	return availableSpace >= count;
+}
+
+bool PlayerInventory::consumeSelectedItem(int count)
+{
+	if (m_selectedSlot < 0 || m_selectedSlot >= m_currentCapacity)
+		return false;
+
+	auto& slot = m_slots[m_selectedSlot];
+
+	if (slot.isEmpty() || slot.stackCount < count)
+		return false;
+
+	slot.stackCount -= count;
+
+	// Clear slot if empty
+	if (slot.stackCount <= 0)
+	{
+		slot = InventorySlot();
+		m_hotbar[m_selectedSlot] = Material(); // Clear material too
+	}
+
+	return true;
+}
+
+// ---- Blueprint/Crafting system ----
+
+std::map<Voxel::BlockID, int> PlayerInventory::getResourceMap() const
+{
+	std::map<Voxel::BlockID, int> resources;
+
+	for (int i = 0; i < m_currentCapacity; ++i)
+	{
+		if (!m_slots[i].isEmpty())
+		{
+			resources[m_slots[i].blockID] += m_slots[i].stackCount;
+		}
+	}
+
+	return resources;
+}
+
+int PlayerInventory::craftBlueprint(const Crafting::Blueprint& blueprint)
+{
+	if (!blueprint.isUnlocked)
+		return 0;
+
+	// Check if we have enough resources
+	auto resources = getResourceMap();
+	if (!blueprint.canCraft(resources))
+		return 0;
+
+	// Consume resources from inventory
+	for (const auto& cost : blueprint.costs)
+	{
+		int remainingToConsume = cost.quantity;
+
+		for (int i = 0; i < m_currentCapacity && remainingToConsume > 0; ++i)
+		{
+			if (m_slots[i].blockID == cost.resourceType && m_slots[i].stackCount > 0)
+			{
+				int toConsume = std::min(remainingToConsume, m_slots[i].stackCount);
+				m_slots[i].stackCount -= toConsume;
+				remainingToConsume -= toConsume;
+
+				// Clear slot if empty
+				if (m_slots[i].stackCount <= 0)
+				{
+					m_slots[i] = InventorySlot();
+					m_hotbar[i] = Material();
+				}
+			}
+		}
+	}
+
+	// Add crafted items to inventory
+	int crafted = addPickedUpItem(blueprint.resultBlock, blueprint.craftYield);
+
+	return crafted;
+}
+
+void PlayerInventory::saveToMetadata(Persistence::WorldMetadata& metadata) const
+{
+	// Save inventory capacity and selected slot
+	metadata.inventoryCapacity = m_currentCapacity;
+	metadata.selectedSlot = m_selectedSlot;
+
+	// Save all inventory slots
+	metadata.inventorySlots.clear();
+	metadata.inventorySlots.reserve(m_currentCapacity);
+
+	for (int i = 0; i < m_currentCapacity; ++i)
+	{
+		Persistence::WorldMetadata::InventorySlotData slotData;
+		slotData.blockID = static_cast<uint16_t>(m_slots[i].blockID);
+		slotData.stackCount = m_slots[i].stackCount;
+		metadata.inventorySlots.push_back(slotData);
+	}
+
+	// Save unlocked blueprints
+	metadata.unlockedBlueprints.clear();
+	const auto& allBlueprints = m_blueprints.getAllBlueprints();
+	for (const auto& bp : allBlueprints)
+	{
+		if (bp.isUnlocked)
+		{
+			metadata.unlockedBlueprints.push_back(static_cast<uint16_t>(bp.resultBlock));
+		}
+	}
+}
+
+void PlayerInventory::loadFromMetadata(const Persistence::WorldMetadata& metadata)
+{
+	// Restore inventory capacity
+	m_currentCapacity = metadata.inventoryCapacity;
+	if (m_currentCapacity < BASE_SLOTS) m_currentCapacity = BASE_SLOTS;
+	if (m_currentCapacity > MAX_SLOTS) m_currentCapacity = MAX_SLOTS;
+
+	// Restore selected slot
+	m_selectedSlot = metadata.selectedSlot;
+	if (m_selectedSlot < 0 || m_selectedSlot >= m_currentCapacity)
+		m_selectedSlot = 0;
+
+	// Clear current inventory
+	for (int i = 0; i < MAX_SLOTS; ++i)
+	{
+		m_slots[i] = InventorySlot();
+		m_hotbar[i] = Material();
+	}
+
+	// Restore inventory slots
+	int slotsToLoad = std::min(static_cast<int>(metadata.inventorySlots.size()), m_currentCapacity);
+	for (int i = 0; i < slotsToLoad; ++i)
+	{
+		const auto& slotData = metadata.inventorySlots[i];
+		Voxel::BlockID blockID = static_cast<Voxel::BlockID>(slotData.blockID);
+		int stackCount = slotData.stackCount;
+
+		// Only restore non-empty slots
+		if (blockID != Voxel::BlockID::Air && stackCount > 0)
+		{
+			m_slots[i] = InventorySlot(blockID, stackCount);
+
+			// Find matching material in database
+			bool found = false;
+			for (const Material& mat : s_allMaterials)
+			{
+				if (mat.blockID == blockID)
+				{
+					m_hotbar[i] = mat;
+					found = true;
+					break;
+				}
+			}
+
+			// If not found in database, create a basic material wrapper
+			if (!found)
+			{
+				m_hotbar[i] = Material(blockID, "Unknown Material", "Undefined block", MaterialCategory::Structure);
+			}
+		}
+	}
+
+	// Restore unlocked blueprints
+	if (!metadata.unlockedBlueprints.empty())
+	{
+		// Clear all unlocks first
+		const auto& allBlueprints = m_blueprints.getAllBlueprints();
+		for (auto& bp : allBlueprints)
+		{
+			const_cast<Crafting::Blueprint&>(bp).isUnlocked = false;
+		}
+
+		// Unlock saved blueprints
+		for (uint16_t blockID : metadata.unlockedBlueprints)
+		{
+			m_blueprints.unlockBlueprint(static_cast<Voxel::BlockID>(blockID));
+		}
+	}
+	else
+	{
+		// If no blueprint data found, unlock all by default (backward compatibility)
+		m_blueprints.unlockAllBlueprints();
 	}
 }
 

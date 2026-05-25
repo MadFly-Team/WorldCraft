@@ -103,10 +103,19 @@ std::string WorldMetadata::toJSON() const
 
 	// Inventory state
 	ss << "  \"inventory\": {\n";
-	ss << "    \"hotbarSlots\": [";
-	for (size_t i = 0; i < hotbarSlots.size(); ++i) {
+	ss << "    \"capacity\": " << inventoryCapacity << ",\n";
+	ss << "    \"selectedSlot\": " << selectedSlot << ",\n";
+	ss << "    \"slots\": [\n";
+	for (size_t i = 0; i < inventorySlots.size(); ++i) {
+		if (i > 0) ss << ",\n";
+		ss << "      {\"blockID\": " << inventorySlots[i].blockID 
+		   << ", \"stackCount\": " << inventorySlots[i].stackCount << "}";
+	}
+	ss << "\n    ],\n";
+	ss << "    \"unlockedBlueprints\": [";
+	for (size_t i = 0; i < unlockedBlueprints.size(); ++i) {
 		if (i > 0) ss << ", ";
-		ss << hotbarSlots[i];
+		ss << unlockedBlueprints[i];
 	}
 	ss << "]\n";
 	ss << "  }\n";
@@ -258,24 +267,90 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		timePaused = safeParseBool("timePaused", false);
 		useLiveTime = safeParseBool("useLiveTime", false);
 
-		// Parse inventory hotbar slots (backward compatible - if not present, leave empty)
-		std::string hotbarStr = findValue("hotbarSlots");
-		hotbarSlots.clear();
-		if (!hotbarStr.empty()) {
+		// Parse inventory system (new format with full inventory and blueprints)
+		inventoryCapacity = safeParseInt("capacity", 10);
+		selectedSlot = safeParseInt("selectedSlot", 0);
+
+		// Parse inventory slots
+		inventorySlots.clear();
+		std::string slotsStr = findValue("slots");
+		if (!slotsStr.empty() && slotsStr[0] == '[') {
+			// Parse slot array
+			size_t pos = 1; // skip '['
+			while (pos < slotsStr.length()) {
+				// Find blockID
+				size_t blockIDPos = slotsStr.find("\"blockID\":", pos);
+				if (blockIDPos == std::string::npos) break;
+				blockIDPos += 10; // skip "blockID":
+
+				// Parse blockID value
+				uint16_t blockID = 0;
+				std::stringstream ss1(slotsStr.substr(blockIDPos));
+				ss1 >> blockID;
+
+				// Find stackCount
+				size_t stackPos = slotsStr.find("\"stackCount\":", blockIDPos);
+				if (stackPos == std::string::npos) break;
+				stackPos += 13; // skip "stackCount":
+
+				// Parse stackCount value
+				int stackCount = 0;
+				std::stringstream ss2(slotsStr.substr(stackPos));
+				ss2 >> stackCount;
+
+				InventorySlotData slot;
+				slot.blockID = blockID;
+				slot.stackCount = stackCount;
+				inventorySlots.push_back(slot);
+
+				// Move to next slot
+				pos = slotsStr.find("},", stackPos);
+				if (pos == std::string::npos) break;
+				pos += 2;
+			}
+		}
+
+		// Backward compatibility: try loading old hotbarSlots format
+		if (inventorySlots.empty()) {
+			std::string hotbarStr = findValue("hotbarSlots");
+			if (!hotbarStr.empty()) {
+				try {
+					std::stringstream ss(hotbarStr);
+					char ch;
+					ss >> ch; // skip '['
+
+					uint16_t blockID;
+					while (ss >> blockID) {
+						InventorySlotData slot;
+						slot.blockID = blockID;
+						slot.stackCount = (blockID != 0) ? 1 : 0;
+						inventorySlots.push_back(slot);
+						ss >> ch; // skip ',' or ']'
+						if (ch == ']') break;
+					}
+				} catch (...) {
+					inventorySlots.clear();
+				}
+			}
+		}
+
+		// Parse unlocked blueprints
+		unlockedBlueprints.clear();
+		std::string blueprintsStr = findValue("unlockedBlueprints");
+		if (!blueprintsStr.empty() && blueprintsStr[0] == '[') {
 			try {
-				std::stringstream ss(hotbarStr);
+				std::stringstream ss(blueprintsStr);
 				char ch;
 				ss >> ch; // skip '['
 
 				uint16_t blockID;
 				while (ss >> blockID) {
-					hotbarSlots.push_back(blockID);
+					unlockedBlueprints.push_back(blockID);
 					ss >> ch; // skip ',' or ']'
 					if (ch == ']') break;
 				}
 			} catch (...) {
-				// If parsing fails, clear slots (will use defaults)
-				hotbarSlots.clear();
+				unlockedBlueprints.clear();
 			}
 		}
 

@@ -6,9 +6,9 @@ namespace UI
 
 FabricatorUI::FabricatorUI()
 	: m_isOpen(false)
-	, m_selectedCategory(Inventory::MaterialCategory::Structure)
-	, m_hoveredMaterialIndex(-1)
-	, m_hoveredHotbarSlot(-1)
+	, m_selectedRarity(Crafting::BlueprintRarity::Common)
+	, m_hoveredBlueprintIndex(-1)
+	, m_selectedBlueprint(nullptr)
 {
 }
 
@@ -27,208 +27,323 @@ void FabricatorUI::render(Inventory::PlayerInventory& inventory)
 	if (!m_isOpen)
 		return;
 
-	// Center the window
-	ImGui::SetNextWindowSize(ImVec2(900, 600), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.5f),
-							ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+	// Fullscreen window
+	ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+	ImGui::SetNextWindowPos(ImVec2(0, 0));
 
-	// Sci-fi window styling
-	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.12f, 0.95f));
-	ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.0f, 0.4f, 0.6f, 0.9f));
-	ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.0f, 0.5f, 0.7f, 1.0f));
+	// Sci-fi dark styling
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.08f, 0.98f));
+	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.08f, 0.12f, 0.95f));
+	ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.0f, 0.5f, 0.7f, 0.6f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
-	if (ImGui::Begin("Material Fabricator Database", &m_isOpen, ImGuiWindowFlags_NoCollapse))
+	if (ImGui::Begin("##BlueprintFabricator", &m_isOpen, 
+					 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | 
+					 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+					 ImGuiWindowFlags_NoBringToFrontOnFocus))
 	{
-		// Left panel - Category list (20% width)
-		ImGui::BeginChild("CategoryPanel", ImVec2(180, -50), true);
-		renderCategoryList();
+		// Title bar
+		ImGui::SetCursorPos(ImVec2(20, 20));
+		ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default font (larger)
+		ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), "BLUEPRINT FABRICATOR");
+		ImGui::PopFont();
+
+		ImGui::SetCursorPos(ImVec2(20, 50));
+		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), 
+						   "Capacity: %d/%d slots | Press I or ESC to close", 
+						   inventory.getCurrentCapacity(), inventory.getMaxCapacity());
+
+		// Position for main content
+		ImGui::SetCursorPos(ImVec2(20, 90));
+
+		// Add a dummy to inform ImGui about the space used by SetCursorPos
+		ImGui::Dummy(ImVec2(0, 0));
+
+		// Main layout: Rarity list (left) | Blueprint grid (center) | Crafting panel (right)
+		ImGui::BeginChild("RarityPanel", ImVec2(200, -20), true);
+		renderRarityList();
 		ImGui::EndChild();
 
 		ImGui::SameLine();
 
-		// Right panel - Material grid (80% width)
-		ImGui::BeginChild("MaterialPanel", ImVec2(0, -50), true);
-		renderMaterialGrid(inventory);
+		ImGui::BeginChild("BlueprintPanel", ImVec2(ImGui::GetContentRegionAvail().x * 0.6f, -20), true);
+		renderBlueprintGrid(inventory);
 		ImGui::EndChild();
 
-		// Bottom panel - Hotbar slots
-		ImGui::Separator();
-		ImGui::Text("Hotbar:");
 		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "(Click material above, then click hotbar slot to assign)");
-		renderHotbarSlots(inventory);
+
+		ImGui::BeginChild("CraftingPanel", ImVec2(0, -20), true);
+		renderCraftingPanel(inventory);
+		ImGui::EndChild();
 	}
 	ImGui::End();
 
+	ImGui::PopStyleVar(2);
 	ImGui::PopStyleColor(3);
 }
 
-void FabricatorUI::renderCategoryList()
+void FabricatorUI::renderRarityList()
 {
-	ImGui::Text("Categories");
+	ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), "RARITY TIERS");
 	ImGui::Separator();
+	ImGui::Spacing();
 
-	for (int i = 0; i < static_cast<int>(Inventory::MaterialCategory::COUNT); ++i)
+	const Crafting::BlueprintRarity rarities[] = {
+		Crafting::BlueprintRarity::Common,
+		Crafting::BlueprintRarity::Uncommon,
+		Crafting::BlueprintRarity::Rare,
+		Crafting::BlueprintRarity::Epic,
+		Crafting::BlueprintRarity::Legendary
+	};
+
+	for (auto rarity : rarities)
 	{
-		Inventory::MaterialCategory category = static_cast<Inventory::MaterialCategory>(i);
-		std::string categoryName = Inventory::PlayerInventory::getCategoryName(category);
+		bool isSelected = (rarity == m_selectedRarity);
+		std::string rarityName = Crafting::Blueprint::getRarityName(rarity);
+		ImVec4 rarityColor = Crafting::Blueprint::getRarityColor(rarity);
 
-		bool isSelected = (category == m_selectedCategory);
-
-		// Category button styling
 		if (isSelected)
 		{
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.5f, 0.7f, 1.0f));
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(rarityColor.x * 0.5f, rarityColor.y * 0.5f, rarityColor.z * 0.5f, 1.0f));
 		}
 		else
 		{
-			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.3f, 1.0f));
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.15f, 0.2f, 1.0f));
 		}
 
-		if (ImGui::Button(categoryName.c_str(), ImVec2(-1, 40)))
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(rarityColor.x * 0.7f, rarityColor.y * 0.7f, rarityColor.z * 0.7f, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_Text, rarityColor);
+
+		if (ImGui::Button(rarityName.c_str(), ImVec2(-1, 50)))
 		{
-			m_selectedCategory = category;
-			m_hoveredMaterialIndex = -1;
+			m_selectedRarity = rarity;
+			m_selectedBlueprint = nullptr;
 		}
 
-		ImGui::PopStyleColor();
+		// Show tooltip on hover
+		if (ImGui::IsItemHovered())
+		{
+			ImGui::BeginTooltip();
+			ImGui::TextColored(rarityColor, "%s Tier", rarityName.c_str());
+			ImGui::Text("Click to view blueprints");
+			ImGui::EndTooltip();
+		}
+
+		ImGui::PopStyleColor(3);
+		ImGui::Spacing();
 	}
 }
 
-void FabricatorUI::renderMaterialGrid(Inventory::PlayerInventory& inventory)
+void FabricatorUI::renderBlueprintGrid(Inventory::PlayerInventory& inventory)
 {
-	std::string categoryName = Inventory::PlayerInventory::getCategoryName(m_selectedCategory);
-	ImGui::Text("Materials - %s", categoryName.c_str());
+	std::string rarityName = Crafting::Blueprint::getRarityName(m_selectedRarity);
+	ImGui::TextColored(Crafting::Blueprint::getRarityColor(m_selectedRarity), 
+					   "BLUEPRINTS - %s", rarityName.c_str());
 	ImGui::Separator();
+	ImGui::Spacing();
 
-	auto materials = Inventory::PlayerInventory::getMaterialsByCategory(m_selectedCategory);
+	auto blueprints = inventory.getBlueprintDatabase().getBlueprintsByRarity(m_selectedRarity);
 
-	if (materials.empty())
+	if (blueprints.empty())
 	{
-		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No materials in this category");
+		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "No blueprints in this tier");
 		return;
 	}
 
-	// Grid layout
-	const int columns = 4;
-	const float buttonSize = 120.0f;
+	auto resources = inventory.getResourceMap();
+	const int columns = 3;
+	const float buttonWidth = 200.0f;
+	const float buttonHeight = 100.0f;
 
-	for (int i = 0; i < static_cast<int>(materials.size()); ++i)
+	for (int i = 0; i < static_cast<int>(blueprints.size()); ++i)
 	{
-		const Inventory::Material& mat = materials[i];
+		const Crafting::Blueprint* bp = blueprints[i];
 
-		// Material button
 		ImGui::PushID(i);
 
-		// Color based on category
-		ImVec4 buttonColor(0.2f, 0.2f, 0.3f, 1.0f);
-		switch (mat.category)
+		bool isUnlocked = bp->isUnlocked;
+		bool canCraft = bp->canCraft(resources);
+		ImVec4 buttonColor;
+
+		if (!isUnlocked)
 		{
-		case Inventory::MaterialCategory::Structure:  buttonColor = ImVec4(0.12f, 0.12f, 0.18f, 1.0f); break;
-		case Inventory::MaterialCategory::Energy:     buttonColor = ImVec4(0.25f, 0.22f, 0.06f, 1.0f);  break;
-		case Inventory::MaterialCategory::Tech:       buttonColor = ImVec4(0.06f, 0.18f, 0.25f, 1.0f);  break;
-		case Inventory::MaterialCategory::Defensive:  buttonColor = ImVec4(0.18f, 0.06f, 0.06f, 1.0f);  break;
-		case Inventory::MaterialCategory::Lighting:   buttonColor = ImVec4(0.25f, 0.25f, 0.12f, 1.0f);  break;
-		case Inventory::MaterialCategory::Natural:    buttonColor = ImVec4(0.12f, 0.22f, 0.12f, 1.0f);  break;
-		case Inventory::MaterialCategory::Special:    buttonColor = ImVec4(0.22f, 0.12f, 0.25f, 1.0f);  break;
-		default: break;
+			buttonColor = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);  // Locked - dark
+		}
+		else if (canCraft)
+		{
+			buttonColor = ImVec4(0.1f, 0.3f, 0.2f, 1.0f);  // Craftable - green tint
+		}
+		else
+		{
+			buttonColor = ImVec4(0.15f, 0.15f, 0.2f, 1.0f);  // Not enough resources - dim
 		}
 
 		ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(buttonColor.x * 1.5f, buttonColor.y * 1.5f, buttonColor.z * 1.5f, 1.0f));
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.6f, 0.8f, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, Crafting::Blueprint::getRarityColor(bp->rarity));
 
-		if (ImGui::Button(mat.name.c_str(), ImVec2(buttonSize, buttonSize)))
+		if (ImGui::Button(bp->name.c_str(), ImVec2(buttonWidth, buttonHeight)))
 		{
-			m_hoveredMaterialIndex = i;
+			m_selectedBlueprint = bp;
+		}
+
+		// Show tooltip on hover with blueprint details
+		if (ImGui::IsItemHovered())
+		{
+			ImGui::BeginTooltip();
+			ImGui::TextColored(Crafting::Blueprint::getRarityColor(bp->rarity), "%s", bp->name.c_str());
+			ImGui::Separator();
+			ImGui::TextWrapped("%s", bp->description.c_str());
+			ImGui::Spacing();
+			if (!isUnlocked)
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "LOCKED - Not yet discovered");
+			}
+			else if (canCraft)
+			{
+				ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Ready to craft!");
+			}
+			else
+			{
+				ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Insufficient resources");
+			}
+			ImGui::Text("Click to view details");
+			ImGui::EndTooltip();
 		}
 
 		ImGui::PopStyleColor(3);
 
-		// Tooltip with description
-		if (ImGui::IsItemHovered())
+		// Show lock icon or checkmark on the same line as button
+		ImGui::SameLine();
+		// Use spacing instead of SetCursorPosX to avoid ImGui warning
+		float spacingOffset = -30.0f;
+		if (spacingOffset < 0)
 		{
-			ImGui::BeginTooltip();
-			ImGui::Text("%s", mat.name.c_str());
-			ImGui::Separator();
-			ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "%s", mat.description.c_str());
-			ImGui::Text("Category: %s", Inventory::PlayerInventory::getCategoryName(mat.category).c_str());
-			ImGui::EndTooltip();
+			// Move cursor back by using negative dummy width
+			ImGui::Dummy(ImVec2(spacingOffset, 0));
+			ImGui::SameLine();
+		}
+
+		if (!isUnlocked)
+		{
+			ImGui::TextColored(ImVec4(0.5f, 0.1f, 0.1f, 1.0f), "[LOCKED]");
+		}
+		else if (canCraft)
+		{
+			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "[READY]");
 		}
 
 		ImGui::PopID();
 
-		// Layout columns
-		if ((i + 1) % columns != 0 && i < static_cast<int>(materials.size()) - 1)
+		// Grid layout
+		if ((i + 1) % columns != 0)
 		{
 			ImGui::SameLine();
 		}
-	}
-
-	// Instructions
-	ImGui::Spacing();
-	ImGui::Separator();
-	if (m_hoveredMaterialIndex >= 0)
-	{
-		ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Selected: %s", materials[m_hoveredMaterialIndex].name.c_str());
-		ImGui::Text("Click a hotbar slot below to assign this material");
-	}
-	else
-	{
-		ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Click a material to select it");
 	}
 }
 
-void FabricatorUI::renderHotbarSlots(Inventory::PlayerInventory& inventory)
+void FabricatorUI::renderCraftingPanel(Inventory::PlayerInventory& inventory)
 {
-	const float slotSize = 60.0f;
-	const float spacing = 10.0f;
+	ImGui::TextColored(ImVec4(0.0f, 0.8f, 1.0f, 1.0f), "CRAFTING");
+	ImGui::Separator();
+	ImGui::Spacing();
 
-	for (int i = 0; i < Inventory::PlayerInventory::HOTBAR_SIZE; ++i)
+	if (!m_selectedBlueprint)
 	{
-		ImGui::PushID(100 + i);
+		ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a blueprint to craft");
+		return;
+	}
 
-		const Inventory::Material& mat = inventory.getMaterial(i);
-		bool isCurrentSlot = (i == inventory.getSelectedSlot());
+	const Crafting::Blueprint& bp = *m_selectedBlueprint;
 
-		// Slot button styling
-		ImVec4 slotColor = isCurrentSlot 
-			? ImVec4(0.0f, 0.5f, 0.7f, 1.0f)
-			: ImVec4(0.15f, 0.15f, 0.2f, 1.0f);
+	// Blueprint info
+	ImGui::TextColored(Crafting::Blueprint::getRarityColor(bp.rarity), "%s", bp.name.c_str());
+	ImGui::TextWrapped("%s", bp.description.c_str());
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
 
-		ImGui::PushStyleColor(ImGuiCol_Button, slotColor);
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.6f, 0.8f, 1.0f));
+	// Check if unlocked
+	if (!bp.isUnlocked)
+	{
+		ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "LOCKED");
+		ImGui::TextWrapped("This blueprint has not been discovered yet.");
+		return;
+	}
 
-		std::string label = mat.isEmpty() ? "Empty" : mat.name;
-		if (ImGui::Button(label.c_str(), ImVec2(slotSize, slotSize)))
+	// Show resource costs
+	ImGui::Text("Required Resources:");
+	ImGui::Separator();
+
+	auto resources = inventory.getResourceMap();
+	bool canCraftAll = true;
+
+	for (const auto& cost : bp.costs)
+	{
+		int playerHas = 0;
+		auto it = resources.find(cost.resourceType);
+		if (it != resources.end())
 		{
-			// Assign selected material to this slot
-			if (m_hoveredMaterialIndex >= 0)
+			playerHas = it->second;
+		}
+
+		bool hasEnough = playerHas >= cost.quantity;
+		if (!hasEnough)
+			canCraftAll = false;
+
+		// Find material name
+		const auto& allMaterials = Inventory::PlayerInventory::getAllMaterials();
+		std::string resourceName = "Unknown";
+		for (const auto& mat : allMaterials)
+		{
+			if (mat.blockID == cost.resourceType)
 			{
-				auto materials = Inventory::PlayerInventory::getMaterialsByCategory(m_selectedCategory);
-				if (m_hoveredMaterialIndex < static_cast<int>(materials.size()))
-				{
-					inventory.setMaterial(i, materials[m_hoveredMaterialIndex]);
-				}
+				resourceName = mat.name;
+				break;
 			}
 		}
 
-		ImGui::PopStyleColor(2);
+		ImVec4 textColor = hasEnough ? ImVec4(0.2f, 1.0f, 0.2f, 1.0f) : ImVec4(1.0f, 0.3f, 0.3f, 1.0f);
+		ImGui::TextColored(textColor, "%s: %d / %d", resourceName.c_str(), playerHas, cost.quantity);
+	}
 
-		// Slot number overlay
-		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		ImVec2 slotPos = ImGui::GetItemRectMin();
-		char slotNum[4];
-		snprintf(slotNum, sizeof(slotNum), "%d", i + 1);
-		drawList->AddText(ImVec2(slotPos.x + 4, slotPos.y + 2), IM_COL32(200, 200, 200, 255), slotNum);
+	ImGui::Spacing();
+	ImGui::Separator();
+	ImGui::Spacing();
 
-		ImGui::PopID();
+	// Craft yield info
+	ImGui::Text("Crafts: %d x %s", bp.craftYield, bp.name.c_str());
+	ImGui::Spacing();
 
-		if (i < Inventory::PlayerInventory::HOTBAR_SIZE - 1)
+	// Craft button
+	bool canCraft = bp.canCraft(resources);
+
+	if (!canCraft)
+	{
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.1f, 0.1f, 1.0f));
+		ImGui::Button("INSUFFICIENT RESOURCES", ImVec2(-1, 50));
+		ImGui::PopStyleColor();
+	}
+	else
+	{
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.5f, 0.3f, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.7f, 0.4f, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.3f, 0.9f, 0.5f, 1.0f));
+
+		if (ImGui::Button("CRAFT", ImVec2(-1, 50)))
 		{
-			ImGui::SameLine();
+			int crafted = inventory.craftBlueprint(bp);
+			if (crafted > 0)
+			{
+				// Success feedback (could add sound/particles here)
+			}
 		}
+
+		ImGui::PopStyleColor(3);
 	}
 }
 
 } // namespace UI
+

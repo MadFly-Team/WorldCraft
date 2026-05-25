@@ -5,10 +5,12 @@
 #include <Renderer/Window.h>
 #include <Renderer/Camera.h>
 #include <Renderer/WireframeCube.h>
+#include <Renderer/ItemEntityRenderer.h>
 #include <Texture/BlockTextures.h>
 #include <Chunk/ChunkWorld.h>
 #include <WorldGen/TerrainGen.h>
 #include <World/WaterSimulation.h>
+#include <World/ItemEntityManager.h>
 #include <UI/ImGuiManager.h>
 #include <UI/SettingsDialog.h>
 #include <UI/LoadingScreen.h>
@@ -21,6 +23,7 @@
 #include <UI/Hotbar.h>
 #include <UI/RadialMenu.h>
 #include <UI/FabricatorUI.h>
+#include <UI/InventoryUI.h>
 #include <Inventory/Inventory.h>
 #include <WorldGen/WorldSettings.h>
 #include <Persistence/WorldPersistence.h>
@@ -511,11 +514,13 @@ int main()
         GLuint skyVAO = 0;
 
         Renderer::WireframeCube wireframeCube;  // Block highlight renderer
+        Renderer::ItemEntityRenderer itemRenderer;  // Dropped item renderer
     };
 
     auto destroyRenderResources = [](RenderResources& rr)
     {
         rr.wireframeCube.cleanup();
+        rr.itemRenderer.destroy();
         if (rr.skyVAO)
         {
             glDeleteVertexArrays(1, &rr.skyVAO);
@@ -569,6 +574,9 @@ int main()
 
         // Initialize wireframe cube for block highlighting
         rr.wireframeCube.init();
+
+        // Initialize item entity renderer
+        rr.itemRenderer.init();
     };
 
     // ---- Window & GL context ------------------------------------------------
@@ -600,6 +608,7 @@ int main()
     UI::Hotbar hotbar;
     UI::RadialMenu radialMenu;
     UI::FabricatorUI fabricatorUI;
+    UI::InventoryUI inventoryUI;
     bool isInitialLoadComplete = false;
 
     // ---- Inventory System ---------------------------------------------------
@@ -669,8 +678,8 @@ int main()
     charCamera.setYaw(worldMetadata.playerYaw);
     charCamera.setPitch(worldMetadata.playerPitch);
 
-    // Restore inventory from saved metadata
-    playerInventory.importHotbar(worldMetadata.hotbarSlots);
+    // Restore inventory and blueprint state from saved metadata
+    playerInventory.loadFromMetadata(worldMetadata);
 
     // ---- World --------------------------------------------------------------
     // Start with settings from metadata
@@ -683,6 +692,9 @@ int main()
     // ---- Water Simulation ---------------------------------------------------
     World::WaterSimulation waterSim;
     float waterTickAccumulator = 0.0f;
+
+    // ---- Item Entity Manager (dropped items) ----------------------------------
+    World::ItemEntityManager itemManager;
 
     // Callback for when user generates a new world
     bool needsWorldRegeneration = false;
@@ -766,8 +778,8 @@ int main()
         worldMetadata.timePaused = timePaused;
         worldMetadata.useLiveTime = useLiveTime;
 
-        // Save inventory state
-        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+        // Save inventory and blueprint state
+        playerInventory.saveToMetadata(worldMetadata);
 
         persistence->saveMetadata(worldMetadata);
 
@@ -819,8 +831,8 @@ int main()
             worldMetadata.timePaused = timePaused;
             worldMetadata.useLiveTime = useLiveTime;
 
-            // Save inventory state
-            worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+            // Save inventory and blueprint state
+            playerInventory.saveToMetadata(worldMetadata);
 
             persistence->saveMetadata(worldMetadata);
 
@@ -929,8 +941,8 @@ int main()
                 currentSettings = settingsDialog.getSettings();
                 worldMetadata.settings = currentSettings;
 
-                // Save inventory state
-                worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+                // Save inventory and blueprint state
+                playerInventory.saveToMetadata(worldMetadata);
 
                 persistence->saveMetadata(worldMetadata);
 
@@ -979,8 +991,8 @@ int main()
             useLiveTime = worldMetadata.useLiveTime;
             settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
 
-            // Restore inventory
-            playerInventory.importHotbar(worldMetadata.hotbarSlots);
+            // Restore inventory and blueprint state
+            playerInventory.loadFromMetadata(worldMetadata);
         }
         else
         {
@@ -1041,12 +1053,15 @@ int main()
         }
 
         // Control mouse cursor and relative mouse mode based on dialog/menu state or loading
-        bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen() || fabricatorUI.isOpen();
+        bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen();
         bool menuOpen = gameMenu.isVisible();
+        bool fabricatorOpen = fabricatorUI.isOpen();
+        bool inventoryOpen = inventoryUI.isOpen();
         bool radialOpen = radialMenu.isVisible();
         bool loading = loadingScreen.isActive();
-        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || radialOpen || loading) ? SDL_FALSE : SDL_TRUE);
-        SDL_ShowCursor((dialogOpen || menuOpen || radialOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
+        bool uiOpen = dialogOpen || menuOpen || radialOpen || loading || fabricatorOpen || inventoryOpen;
+        SDL_SetRelativeMouseMode(uiOpen ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor(uiOpen ? SDL_ENABLE : SDL_DISABLE);
 
         // Poll SDL events
         SDL_Event event;
@@ -1082,23 +1097,21 @@ int main()
                     // F11 toggles settings dialog
                     settingsDialog.toggle();
                 }
-                else if (event.key.keysym.sym == SDLK_i && !menuOpen && !loading)
+                else if (event.key.keysym.sym == SDLK_i && !dialogOpen && !menuOpen && !loading)
                 {
-                    // 'I' key toggles fabricator inventory UI
-                    fabricatorUI.toggle();
+                    // 'I' key toggles inventory UI (works even when inventory is open to close it)
+                    inventoryUI.toggle();
                 }
-                else if (event.key.keysym.sym == SDLK_e && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_e && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen && !loading)
                 {
-                    // 'E' key toggles build mode (Placement/Removal)
+                    // 'E' key toggles build mode (Placement/Removal) - blocked during dialogs and UI screens
                     if (buildMode == BuildMode::Placement)
                     {
                         buildMode = BuildMode::Removal;
-                        std::cout << "Build Mode: REMOVAL" << std::endl;
                     }
                     else
                     {
                         buildMode = BuildMode::Placement;
-                        std::cout << "Build Mode: PLACEMENT" << std::endl;
                     }
                 }
                 else if (event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT))
@@ -1106,9 +1119,9 @@ int main()
                     // Alt+Enter toggles fullscreen (standard game shortcut)
                     Renderer::toggleFullscreen(window);
                 }
-                else if (event.key.keysym.sym == SDLK_c && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_c && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen && !loading)
                 {
-                    // 'C' key toggles camera mode (when dialog closed and not loading)
+                    // 'C' key toggles camera mode - blocked during dialogs and UI screens
                     if (cameraMode == CameraMode::FreeFly)
                     {
                         // Switch to Character mode
@@ -1126,36 +1139,54 @@ int main()
                         flyCamera.setOrientation(charCamera.yaw(), charCamera.pitch());
                     }
                 }
-                else if (event.key.keysym.sym == SDLK_t && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_t && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen && !loading)
                 {
-                    // 'T' key toggles character torch light
+                    // 'T' key toggles character torch light - blocked during dialogs and UI screens
                     characterTorchEnabled = !characterTorchEnabled;
                 }
-                else if (event.key.keysym.sym == SDLK_q && !dialogOpen && !menuOpen)
+                else if (event.key.keysym.sym == SDLK_q && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen && !loading)
                 {
-                    // 'Q' key opens radial menu (hold to use)
+                    // 'Q' key opens radial menu (hold to use) - blocked during dialogs and UI screens
                     if (!radialMenu.isVisible())
                     {
                         radialMenu.show();
                     }
                 }
-                // Hotbar number keys (1-9)
-                else if (event.key.keysym.sym >= SDLK_1 && event.key.keysym.sym <= SDLK_9 && !dialogOpen)
+                // Hotbar number keys (1-9) - blocked during dialogs and UI screens
+                else if (event.key.keysym.sym >= SDLK_1 && event.key.keysym.sym <= SDLK_9 && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen)
                 {
                     int slot = event.key.keysym.sym - SDLK_1;  // 0-8
                     playerInventory.setSelectedSlot(slot);
                 }
-                else if (event.key.keysym.sym == SDLK_ESCAPE && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_ESCAPE)
                 {
-                    // ESC closes menu if open, otherwise quits
-                    if (gameMenu.isVisible())
+                    // ESC priority: inventory -> fabricator -> menu -> quit
+                    if (inventoryOpen)
+                    {
+                        inventoryUI.close();
+                    }
+                    else if (fabricatorOpen)
+                    {
+                        fabricatorUI.close();
+                    }
+                    else if (!dialogOpen && gameMenu.isVisible())
                     {
                         gameMenu.hide();
                     }
-                    else
+                    else if (!dialogOpen)
                     {
                         shouldQuit = true;
                     }
+                }
+                else if (event.key.keysym.sym == SDLK_u && !dialogOpen && !menuOpen && !inventoryOpen && !fabricatorOpen && !loading)
+                {
+                    // DEBUG: U key - Expand inventory (test feature) - blocked during dialogs and UI screens
+                    playerInventory.expandInventory(5);
+                }
+                else if (event.key.keysym.sym == SDLK_b && !dialogOpen && !menuOpen && !loading)
+                {
+                    // 'B' key toggles blueprint crafting UI
+                    fabricatorUI.toggle();
                 }
                 else if (gameMenu.isVisible())
                 {
@@ -1191,6 +1222,7 @@ int main()
             world.reset();  // Destroy old world
             world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
             waterSim.clear();  // Clear water simulation state
+            itemManager.clear();  // Clear dropped items
             waterTickAccumulator = 0.0f;
             needsWorldRegeneration = false;
 
@@ -1252,12 +1284,13 @@ int main()
                                                static_cast<float>(z));
                 });
 
-            // Handle right mouse button to remove block
+            // Handle mouse buttons based on build mode
             Uint32 mouseState = SDL_GetMouseState(nullptr, nullptr);
-            static bool wasRightPressed = false;
-            bool isRightPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+            static bool wasLeftPressed = false;
+            bool isLeftPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
 
-            if (isRightPressed && !wasRightPressed && targetBlock.has_value())
+            // In Removal mode: left mouse button removes blocks
+            if (buildMode == BuildMode::Removal && isLeftPressed && !wasLeftPressed && targetBlock.has_value())
             {
                 // Remove the targeted block (set to air)
                 const glm::ivec3& blockPos = targetBlock->blockPos;
@@ -1265,7 +1298,7 @@ int main()
                 // Prevent removal of bedrock layer at Y=0 (indestructible bottom)
                 if (blockPos.y == 0)
                 {
-                    wasRightPressed = isRightPressed;
+                    wasLeftPressed = isLeftPressed;
                     continue;
                 }
 
@@ -1280,6 +1313,18 @@ int main()
                                  static_cast<float>(blockPos.y),
                                  static_cast<float>(blockPos.z),
                                  Voxel::BlockID::Air);
+
+                // Spawn item entity for the removed block (Minecraft-style pickup)
+                // Don't spawn items for air or water
+                if (removedBlock != Voxel::BlockID::Air && removedBlock != Voxel::BlockID::Water)
+                {
+                    glm::vec3 spawnPos(
+                        static_cast<float>(blockPos.x) + 0.5f,
+                        static_cast<float>(blockPos.y) + 0.5f,
+                        static_cast<float>(blockPos.z) + 0.5f
+                    );
+                    itemManager.spawnItem(spawnPos, removedBlock, 1);
+                }
 
                 // If we removed water, clean up its source and flow
                 if (wasWater && currentSettings.enableWaterFlow)
@@ -1336,14 +1381,8 @@ int main()
                     waterSim.update(world.get(), playerPos, 64.0f);
                 }
             }
-
-            wasRightPressed = isRightPressed;
-
-            // Handle left mouse button to place block
-            static bool wasLeftPressed = false;
-            bool isLeftPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-
-            if (isLeftPressed && !wasLeftPressed && targetBlock.has_value())
+            // In Placement mode: left mouse button places blocks
+            else if (buildMode == BuildMode::Placement && isLeftPressed && !wasLeftPressed && targetBlock.has_value())
             {
                 // Place block adjacent to targeted block (in the direction of the hit face)
                 const glm::ivec3& hitBlock = targetBlock->blockPos;
@@ -1373,16 +1412,26 @@ int main()
                     // Get selected block from inventory
                     Voxel::BlockID selectedBlock = playerInventory.getSelectedBlockID();
 
-                    // Place the block
-                    world->setBlockAt(static_cast<float>(placePos.x),
-                                     static_cast<float>(placePos.y),
-                                     static_cast<float>(placePos.z),
-                                     selectedBlock);
+                    // Check if player has items in inventory (creative mode: always allow)
+                    // For now: only place if we have items in the selected slot
+                    const Inventory::InventorySlot& selectedSlot = playerInventory.getSlot(playerInventory.getSelectedSlot());
 
-                    // If placing water, register it as a source
-                    if (selectedBlock == Voxel::BlockID::Water)
+                    if (!selectedSlot.isEmpty())
                     {
-                        waterSim.registerSource(placePos.x, placePos.y, placePos.z);
+                        // Place the block
+                        world->setBlockAt(static_cast<float>(placePos.x),
+                                         static_cast<float>(placePos.y),
+                                         static_cast<float>(placePos.z),
+                                         selectedBlock);
+
+                        // Consume one item from inventory
+                        playerInventory.consumeSelectedItem(1);
+
+                        // If placing water, register it as a source
+                        if (selectedBlock == Voxel::BlockID::Water)
+                        {
+                            waterSim.registerSource(placePos.x, placePos.y, placePos.z);
+                        }
                     }
                 }
             }
@@ -1415,6 +1464,32 @@ int main()
                 int maxNewSources = static_cast<int>(currentSettings.waterFlowRate * 10.0f);
                 waterSim.update(world.get(), playerPos, 64.0f, maxNewSources); // Update water within 64 blocks
             }
+        }
+
+        // ---- Item Entity Updates (dropped items) ---------------------------------
+        if (!dialogOpen && world)
+        {
+            glm::vec3 playerPos;
+            if (cameraMode == CameraMode::FreeFly)
+                playerPos = flyCamera.position();
+            else if (cameraMode == CameraMode::Character)
+                playerPos = charCamera.position();
+            else
+                playerPos = chaseCamera.position();
+
+            // Update all dropped items (physics, collection, despawn)
+            // When items are collected, add them to inventory
+            itemManager.update(delta, playerPos, 2.5f,
+                // Collision check callback: returns true if the position is solid
+                [&](float x, float y, float z) -> bool {
+                    if (!world) return false;
+                    Voxel::BlockID block = world->getBlockAt(x, y, z);
+                    return Voxel::BlockRegistry::get().isSolid(block);
+                },
+                // Collection callback: add picked up items to inventory
+                [&](Voxel::BlockID blockType, int stackCount) {
+                    playerInventory.addPickedUpItem(blockType, stackCount);
+                });
         }
 
         // Time progression control
@@ -1487,8 +1562,8 @@ int main()
                         worldMetadata.timePaused = timePaused;
                         worldMetadata.useLiveTime = useLiveTime;
 
-                        // Save inventory state
-                        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+                        // Save inventory and blueprint state
+                        playerInventory.saveToMetadata(worldMetadata);
 
                         persistence->saveMetadata(worldMetadata);
 
@@ -1610,6 +1685,20 @@ int main()
         if (world)
             world->render(rr.mvpLoc, rr.chunkOffsetLoc, camPos, view, proj);
 
+        // ---- Item entities (dropped blocks) -------------------------------------
+        // Render all active item entities as small textured cubes
+        rr.itemRenderer.beginBatch(view, proj);
+        for (const auto& item : itemManager.getItems())
+        {
+            rr.itemRenderer.renderItemBatch(
+                item->getPosition(),
+                item->getBlockType(),
+                item->getRotation(),
+                0.25f  // Small scale for dropped items
+            );
+        }
+        rr.itemRenderer.endBatch();
+
         // ---- Block highlight (wireframe cube) -----------------------------------
         if (targetBlock.has_value())
         {
@@ -1679,7 +1768,10 @@ int main()
         worldNameDialog.render();
         saveConfirmationDialog.render();
 
-        // Render fabricator UI (inventory management)
+        // Render inventory UI (I key)
+        inventoryUI.render(playerInventory);
+
+        // Render fabricator UI (blueprint crafting - B key)
         fabricatorUI.render(playerInventory);
 
         // Chase camera HUD - show when in chase mode
@@ -1744,8 +1836,11 @@ int main()
             ImGui::End();
         }
 
-        // Render analog clock in top-left
-        analogClock.render(timeOfDay, fbW, fbH);
+        // Render analog clock in top-left (hidden when inventory or fabricator is open)
+        if (!inventoryOpen && !fabricatorOpen)
+        {
+            analogClock.render(timeOfDay, fbW, fbH);
+        }
 
         // Render hotbar (always visible except during loading)
         if (!loading)
@@ -1809,8 +1904,8 @@ int main()
         worldMetadata.settings = currentSettings;
         worldMetadata.lastPlayedTime = std::time(nullptr);
 
-        // Save inventory state
-        worldMetadata.hotbarSlots = playerInventory.exportHotbar();
+        // Save inventory and blueprint state
+        playerInventory.saveToMetadata(worldMetadata);
 
         persistence->saveMetadata(worldMetadata);
         std::cout << "Final save: " << finalSaveCount << " chunks saved" << std::endl;
