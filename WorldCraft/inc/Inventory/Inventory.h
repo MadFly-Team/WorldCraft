@@ -138,6 +138,9 @@ public:
 	// Returns true if item was consumed, false if slot is empty
 	bool consumeSelectedItem(int count = 1);
 
+	// Clear inventory and reset to default state (for new world creation)
+	void clear();
+
 	// ---- Blueprint/Crafting system ----
 	// Get all resources in inventory as a map (for crafting checks)
 	std::map<Voxel::BlockID, int> getResourceMap() const;

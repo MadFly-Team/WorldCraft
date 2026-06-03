@@ -1,6 +1,7 @@
 #include <Inventory/Inventory.h>
 #include <Persistence/WorldMetadata.h>
 #include <algorithm>
+#include <iostream>
 
 namespace Inventory
 {
@@ -343,6 +344,27 @@ bool PlayerInventory::consumeSelectedItem(int count)
 	}
 
 	return true;
+}
+
+void PlayerInventory::clear()
+{
+	// Clear all inventory slots
+	for (auto& slot : m_slots)
+	{
+		slot = InventorySlot();
+	}
+
+	// Reset capacity to base and selected slot
+	m_currentCapacity = BASE_SLOTS;
+	m_selectedSlot = 0;
+
+	// Reinitialize default hotbar materials
+	initializeDefaultHotbar();
+
+	// Unlock all blueprints (reset crafting)
+	m_blueprints.unlockAllBlueprints();
+
+	std::cout << "[Inventory] Cleared inventory for new world" << std::endl;
 }
 
 // ---- Blueprint/Crafting system ----

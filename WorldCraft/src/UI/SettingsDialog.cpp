@@ -73,6 +73,11 @@ bool SettingsDialog::render()
 		renderWaterSettings();
 	}
 
+	if (ImGui::CollapsingHeader("Physics Settings"))
+	{
+		renderPhysicsSettings();
+	}
+
 	if (ImGui::CollapsingHeader("Camera Settings"))
 	{
 		renderCameraSettings();
@@ -464,6 +469,106 @@ void SettingsDialog::renderPersistenceSettings()
 	}
 
 	ImGui::Spacing();
+}
+
+void SettingsDialog::renderPhysicsSettings()
+{
+	ImGui::Spacing();
+
+	bool changed = false;
+
+	// Master enable/disable
+	changed |= ImGui::Checkbox("Enable Physics", &m_physicsSettings.enabled);
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Master switch for all block physics.\nDisabling stops falling blocks and impacts.");
+	}
+
+	ImGui::Separator();
+
+	// Gravity
+	changed |= ImGui::SliderFloat("Gravity Multiplier", &m_physicsSettings.gravityMultiplier, 0.1f, 5.0f, "%.2f");
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Multiplies gravity strength.\n0.5 = half gravity, 2.0 = double gravity");
+	}
+
+	// Mass accumulation
+	changed |= ImGui::SliderFloat("Mass Gain Rate", &m_physicsSettings.massAccumulationRate, 0.0f, 0.5f, "%.2f");
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("How much mass blocks gain per block fallen.\n0.10 = 10%% per block");
+	}
+
+	// Max mass multiplier
+	changed |= ImGui::SliderFloat("Max Mass Multiplier", &m_physicsSettings.maxMassMultiplier, 1.0f, 10.0f, "%.1f");
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Maximum mass a falling block can reach.\n3.0 = up to 3x base mass");
+	}
+
+	// Energy dampening
+	changed |= ImGui::SliderFloat("Energy Dampening", &m_physicsSettings.energyDampeningFactor, 0.5f, 2.0f, "%.2f");
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Global energy loss multiplier.\nHigher = more energy lost on impacts (less bouncy)");
+	}
+
+	// Destruction threshold
+	changed |= ImGui::SliderFloat("Destruction Threshold", &m_physicsSettings.destructionThreshold, 1.0f, 10.0f, "%.1fx");
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Multiplier for block destruction.\n2.0 = energy must be 2x block mass to destroy");
+	}
+
+	// Chain reaction depth
+	changed |= ImGui::SliderInt("Max Chain Depth", &m_physicsSettings.maxChainReactionDepth, 1, 20);
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Maximum number of propagation steps for chain reactions.\nHigher = larger explosions/impacts");
+	}
+
+	// Water physics
+	changed |= ImGui::Checkbox("Enable Water Physics", &m_physicsSettings.enableWaterPhysics);
+	ImGui::SameLine();
+	ImGui::TextDisabled("(?)");
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Enable water displacement and ripple effects from impacts.");
+	}
+
+	ImGui::Spacing();
+
+	// Notify callback if settings changed
+	if (changed && m_onPhysicsSettings)
+	{
+		m_onPhysicsSettings(m_physicsSettings);
+	}
+
+	// Reset to defaults button
+	ImGui::Separator();
+	if (ImGui::Button("Reset to Defaults", ImVec2(200.0f, 0.0f)))
+	{
+		m_physicsSettings = WorldPhysics::PhysicsSettings();
+		if (m_onPhysicsSettings)
+		{
+			m_onPhysicsSettings(m_physicsSettings);
+		}
+	}
 }
 
 }
