@@ -41,6 +41,19 @@ namespace Persistence
 		bool timePaused = false;
 		bool useLiveTime = false;
 
+		// Player inventory state - expanded to full inventory system
+		struct InventorySlotData
+		{
+			uint16_t blockID = 0;  // BlockID (0 = Air/empty)
+			int stackCount = 0;     // Stack count (0 = empty)
+		};
+		std::vector<InventorySlotData> inventorySlots;  // All inventory slots (up to 40)
+		int inventoryCapacity = 10;  // Current capacity (10-40)
+		int selectedSlot = 0;  // Currently selected hotbar slot (0-9)
+
+		// Blueprint unlock state
+		std::vector<uint16_t> unlockedBlueprints;  // BlockIDs of unlocked blueprints
+
 		// Statistics
 		uint64_t totalPlayTime = 0;  // Total play time in seconds
 		int modifiedChunkCount = 0;  // Number of chunks with modifications

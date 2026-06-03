@@ -170,12 +170,16 @@ void WireframeCube::render(const glm::ivec3& blockPos, const glm::mat4& mvp, con
 	// Disable depth write but keep depth test so wireframe appears over geometry
 	glDepthMask(GL_FALSE);
 
+	// Make the line thicker for better visibility
+	glLineWidth(3.0f);
+
 	// Render as lines
 	glBindVertexArray(m_vao);
 	glDrawArrays(GL_LINES, 0, 24);
 	glBindVertexArray(0);
 
-	// Restore depth write
+	// Restore defaults
+	glLineWidth(1.0f);
 	glDepthMask(GL_TRUE);
 	glDisable(GL_BLEND);
 }

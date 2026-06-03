@@ -54,8 +54,25 @@ A high-performance voxel-based world exploration game built with modern C++20 an
 - **Block Removal** - Point and click to break blocks
   - Visual targeting with wireframe highlight
   - Ray-cast selection system
+  - Automatic inventory management with full inventory handling
+  - When inventory is full, removed blocks are ejected as physics objects
   - Automatic chunk remeshing after block changes
   - Neighbor chunk updates for seamless edges
+  - Delayed water scans after block removal prevent physics cascades
+- **Block Physics System** - Realistic falling block mechanics
+  - Gravity-based falling for unsupported blocks
+  - Wall attachment detection (blocks with 2+ horizontal neighbors stay attached)
+  - Collision detection and deflection (max 3 bounces)
+  - Block destruction on high-energy impacts with particle effects
+  - Settlement cooldown (0.5s) prevents immediate re-triggering after landing
+  - Ghost block cleanup removes stuck falling blocks after 30 failed settlement attempts
+  - Support validation ensures blocks only settle when properly supported
+  - Energy-based destruction threshold with debris particle effects
+- **Block Pickup and Throw** - G key interaction
+  - Pick up blocks in character mode
+  - Throw blocks with variable power based on hold duration
+  - Physics simulation for thrown blocks with collision
+  - Automatic water cavity detection and fill after physics events
 - **Indestructible Bedrock Layer** - Bottom layer at Y=0 cannot be removed
 - **Torch Lighting** - Dynamic light sources
   - Toggleable character torch (press T)
@@ -64,11 +81,14 @@ A high-performance voxel-based world exploration game built with modern C++20 an
   - Smooth lighting integration with sky-light system
 
 #### Water System
-- **Dynamic Water Simulation** - Realistic water flow mechanics
+- **Advanced Water Simulation** - Realistic water flow with intelligent fill mechanics
+  - Scan-and-fill algorithm for cavity detection and water propagation
+  - Delayed water scan queue (1-second delay) to stabilize block physics interactions
+  - Zero-fill detection prevents infinite loops in sealed cavities
+  - Follow-up scans ensure complete water coverage in complex cave systems
   - Configurable flow rate and update range
-  - Water spreads to adjacent air blocks
-  - Falls downward with gravity
-  - Toggleable in settings dialog
+  - Water spreads to adjacent air blocks and falls downward with gravity
+  - Toggleable in settings dialog with real-time flow rate adjustment
 - **Water Wave System** - Animated water surfaces
   - Vertex displacement shader for realistic waves
   - Multiple wave layers with different frequencies
@@ -239,7 +259,8 @@ Enhanced cave generation for underground exploration.
 - **Noise Generation:** STB Perlin with torus-domain seamless tiling
 - **Collision:** AABB-based player collision with swept volume testing
 - **Lighting:** Sky-light propagation system with 16 brightness levels
-- **Water Simulation:** Queue-based spreading with gravity and configurable flow
+- **Water Simulation:** Scan-and-fill cavity detection with delayed queue processing
+- **Block Physics:** Gravity simulation, collision, deflection, and intelligent settlement
 - **Ray-Casting:** Block targeting for interaction and removal
 
 ### Performance
@@ -274,6 +295,7 @@ Enhanced cave generation for underground exploration.
 - **Space** - Jump
 - **Mouse** - Look around
 - **Right Click** - Remove block (visual targeting with wireframe)
+- **G** - Pick up/throw block (hold for more power)
 - **C** - Switch to Fly Camera
 - **T** - Toggle character torch light
 
@@ -332,10 +354,13 @@ Additional documentation can be found in the `docs/` directory:
 - [x] Torch placement and lighting system
 - [x] Skybox with day/night cycle
 - [x] Dynamic sun/moon position and star rotation
-- [x] Water flow simulation
+- [x] Water flow simulation with scan-and-fill
 - [x] Settings dialog with runtime configuration
-- [ ] Block placement mechanics
-- [ ] Inventory system
+- [x] Block physics with falling mechanics
+- [x] Inventory full handling with block ejection
+- [x] Block pickup and throw mechanics (G key)
+- [ ] Block placement mechanics (expand on existing pickup/throw)
+- [ ] Inventory UI display
 - [ ] Save/load world data
 - [ ] More torch types and light colors
 

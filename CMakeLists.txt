@@ -76,6 +76,9 @@ target_link_libraries(imgui PUBLIC SDL2-static OpenGL::GL)
 # add the subdirectories for the library, IDE and testing framework being used
 #-----------------------------------------------------------------------------
 
+add_subdirectory(CoreLibrary)
+add_subdirectory(CoreLibraryDemo)
+add_subdirectory(TTiMenuDesigner)
 add_subdirectory(WorldCraft)
 
 # Set WorldCraft as the Visual Studio startup project
