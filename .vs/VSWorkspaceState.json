@@ -9,8 +9,9 @@
   },
   "ExpandedNodes": [
     "",
-    "\\WorldCraft"
+    "\\WorldCraft",
+    "\\WorldCraft\\src"
   ],
-  "SelectedNode": "\\CMakeSettings.json",
+  "SelectedNode": "\\README.md",
   "PreviewInSolutionExplorer": false
 }
