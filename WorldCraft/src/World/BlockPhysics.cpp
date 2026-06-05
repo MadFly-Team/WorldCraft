@@ -223,9 +223,21 @@ void BlockPhysics::update(float deltaTime)
 	}
 
 	// Process all queued water fills AFTER all physics updates complete
+	// This ensures that destruction chains don't trigger multiple interfering scans
 	if (m_waterNotifyCallback && !m_pendingWaterFills.empty())
 	{
+		// Skip if there's already an active scan in progress - let it complete first
+		// Keep the pending fills in the queue so they can be processed next frame
+		if (m_waterSimulation && m_waterSimulation->isScanInProgress())
+		{
+			std::cout << "[Physics] Skipping water fill trigger - scan already in progress (keeping " 
+					  << m_pendingWaterFills.size() << " pending for next frame)" << std::endl;
+			return;
+		}
+
 		// Process ALL pending fills to ensure complete coverage
+		// BUT only trigger ONE scan - the first valid air pocket found
+		// This ensures we at least start filling one of the cavities
 		bool scanTriggered = false;
 		size_t processedCount = 0;
 

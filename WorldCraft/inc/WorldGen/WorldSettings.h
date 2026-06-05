@@ -39,7 +39,7 @@ namespace WorldGen
 		// Water simulation
 		bool  enableWaterFlow  = true;     // Enable water spreading simulation
 		bool  enableWaterWaves = true;     // Enable visual wave effect on water surfaces
-		float waterFlowRate    = 0.5f;     // Ticks per second for water updates (0.5 = every 2 seconds)
+		float waterFlowRate    = 5.0f;     // Ticks per second for water updates (higher = faster flow)
 
 		// Persistence settings
 		bool  enableAutoSave   = false;    // Auto-save every 5 minutes (default: OFF)

@@ -219,7 +219,7 @@ void WorldSelectionDialog::renderActionButtons()
 	bool isCurrent = hasSelection && m_persistence && 
 					 m_persistence->getCurrentWorldName() == m_worlds[m_selectedIndex].worldName;
 
-	ImGui::BeginDisabled(!hasSelection || isCurrent);
+	ImGui::BeginDisabled(!hasSelection);
 	if (ImGui::Button("Load World", ImVec2(150, 30)))
 	{
 		if (hasSelection && m_onLoadWorld)
@@ -238,7 +238,7 @@ void WorldSelectionDialog::renderActionButtons()
 	else if (isCurrent)
 	{
 		ImGui::SameLine();
-		ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "This world is currently loaded");
+		ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "Reset to last save");
 	}
 
 	ImGui::SameLine(ImGui::GetWindowWidth() - 170);

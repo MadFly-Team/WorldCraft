@@ -1,44 +1,31 @@
 #pragma once
 
 #include <Inventory/Inventory.h>
-#include <unordered_map>
 
 namespace UI
 {
 
+// ---------------------------------------------------------------------------
+// InventoryUI - Simple inventory display screen (I key)
+// Shows all inventory slots with their contents
+// ---------------------------------------------------------------------------
 class InventoryUI
 {
 public:
-	void initialize();
-	void shutdown();
+	InventoryUI();
 
-	void toggle();
-	void open();
-	void close();
-	bool isOpen() const;
+	// Show/hide the inventory UI
+	void show() { m_isOpen = true; }
+	void hide() { m_isOpen = false; }
+	void close() { m_isOpen = false; }
+	bool isOpen() const { return m_isOpen; }
+	void toggle() { m_isOpen = !m_isOpen; }
 
-	void render(Inventory::PlayerInventory& inventory, int screenW, int screenH);
+	// Render the inventory UI
+	void render(Inventory::PlayerInventory& inventory);
 
 private:
-	struct DragPayload
-	{
-		bool sourceHotbar = true;
-		int sourceIndex = 0;
-	};
-
-	bool m_open = false;
-	bool m_initialized = false;
-	Inventory::InventorySlot m_cursorHeld;
-	std::unordered_map<int, unsigned int> m_layerIcons;
-
-	void renderSlot(Inventory::PlayerInventory& inventory, bool isHotbar, int index, const char* idSuffix);
-	void handleLeftClick(Inventory::InventorySlot& slot);
-	void handleRightClick(Inventory::InventorySlot& slot);
-	void handleDrop(Inventory::PlayerInventory& inventory, bool targetHotbar, int targetIndex);
-
-	unsigned int getIconForBlock(Voxel::BlockID blockId);
-	unsigned int getOrCreateLayerIcon(int layer);
-	static bool generateLayerPixels(int layer, uint8_t* pixels, int pixelCount);
+	bool m_isOpen;
 };
 
 } // namespace UI

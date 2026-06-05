@@ -4,7 +4,6 @@
 #include <iomanip>
 #include <random>
 #include <cstring>
-#include <algorithm>
 
 namespace Persistence
 {
@@ -102,23 +101,23 @@ std::string WorldMetadata::toJSON() const
 	ss << "    \"useLiveTime\": " << (useLiveTime ? "true" : "false") << "\n";
 	ss << "  },\n";
 
-	// Inventory state (additive for backward compatibility)
-	auto writeArray = [&ss](const auto& arr) {
-		ss << "[";
-		for (size_t i = 0; i < arr.size(); ++i)
-		{
-			if (i > 0) ss << ", ";
-			ss << arr[i];
-		}
-		ss << "]";
-	};
-
+	// Inventory state
 	ss << "  \"inventory\": {\n";
-	ss << "    \"selectedHotbarSlot\": " << selectedHotbarSlot << ",\n";
-	ss << "    \"hotbarBlockIds\": "; writeArray(hotbarBlockIds); ss << ",\n";
-	ss << "    \"hotbarCounts\": "; writeArray(hotbarCounts); ss << ",\n";
-	ss << "    \"personalBlockIds\": "; writeArray(personalBlockIds); ss << ",\n";
-	ss << "    \"personalCounts\": "; writeArray(personalCounts); ss << "\n";
+	ss << "    \"capacity\": " << inventoryCapacity << ",\n";
+	ss << "    \"selectedSlot\": " << selectedSlot << ",\n";
+	ss << "    \"slots\": [\n";
+	for (size_t i = 0; i < inventorySlots.size(); ++i) {
+		if (i > 0) ss << ",\n";
+		ss << "      {\"blockID\": " << inventorySlots[i].blockID 
+		   << ", \"stackCount\": " << inventorySlots[i].stackCount << "}";
+	}
+	ss << "\n    ],\n";
+	ss << "    \"unlockedBlueprints\": [";
+	for (size_t i = 0; i < unlockedBlueprints.size(); ++i) {
+		if (i > 0) ss << ", ";
+		ss << unlockedBlueprints[i];
+	}
+	ss << "]\n";
 	ss << "  }\n";
 
 	ss << "}\n";
@@ -204,25 +203,6 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		}
 	};
 
-	auto parseUInt16Array = [&findValue](const std::string& key, auto& outputArray) {
-		std::string value = findValue(key);
-		if (value.empty() || value.front() != '[')
-			return;
-
-		std::stringstream ss(value.substr(1, value.size() - 2));
-		for (size_t i = 0; i < outputArray.size(); ++i)
-		{
-			int v = 0;
-			if (!(ss >> v))
-				break;
-			outputArray[i] = static_cast<uint16_t>(std::clamp(v, 0, 65535));
-			if (ss.peek() == ',')
-				ss.ignore();
-			while (ss.peek() == ' ')
-				ss.ignore();
-		}
-	};
-
 	try {
 		formatVersion = safeParseInt("formatVersion", SAVE_FORMAT_VERSION);
 		worldName = findValue("worldName");
@@ -287,11 +267,92 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		timePaused = safeParseBool("timePaused", false);
 		useLiveTime = safeParseBool("useLiveTime", false);
 
-		selectedHotbarSlot = safeParseInt("selectedHotbarSlot", 0);
-		parseUInt16Array("hotbarBlockIds", hotbarBlockIds);
-		parseUInt16Array("hotbarCounts", hotbarCounts);
-		parseUInt16Array("personalBlockIds", personalBlockIds);
-		parseUInt16Array("personalCounts", personalCounts);
+		// Parse inventory system (new format with full inventory and blueprints)
+		inventoryCapacity = safeParseInt("capacity", 10);
+		selectedSlot = safeParseInt("selectedSlot", 0);
+
+		// Parse inventory slots
+		inventorySlots.clear();
+		std::string slotsStr = findValue("slots");
+		if (!slotsStr.empty() && slotsStr[0] == '[') {
+			// Parse slot array
+			size_t pos = 1; // skip '['
+			while (pos < slotsStr.length()) {
+				// Find blockID
+				size_t blockIDPos = slotsStr.find("\"blockID\":", pos);
+				if (blockIDPos == std::string::npos) break;
+				blockIDPos += 10; // skip "blockID":
+
+				// Parse blockID value
+				uint16_t blockID = 0;
+				std::stringstream ss1(slotsStr.substr(blockIDPos));
+				ss1 >> blockID;
+
+				// Find stackCount
+				size_t stackPos = slotsStr.find("\"stackCount\":", blockIDPos);
+				if (stackPos == std::string::npos) break;
+				stackPos += 13; // skip "stackCount":
+
+				// Parse stackCount value
+				int stackCount = 0;
+				std::stringstream ss2(slotsStr.substr(stackPos));
+				ss2 >> stackCount;
+
+				InventorySlotData slot;
+				slot.blockID = blockID;
+				slot.stackCount = stackCount;
+				inventorySlots.push_back(slot);
+
+				// Move to next slot
+				pos = slotsStr.find("},", stackPos);
+				if (pos == std::string::npos) break;
+				pos += 2;
+			}
+		}
+
+		// Backward compatibility: try loading old hotbarSlots format
+		if (inventorySlots.empty()) {
+			std::string hotbarStr = findValue("hotbarSlots");
+			if (!hotbarStr.empty()) {
+				try {
+					std::stringstream ss(hotbarStr);
+					char ch;
+					ss >> ch; // skip '['
+
+					uint16_t blockID;
+					while (ss >> blockID) {
+						InventorySlotData slot;
+						slot.blockID = blockID;
+						slot.stackCount = (blockID != 0) ? 1 : 0;
+						inventorySlots.push_back(slot);
+						ss >> ch; // skip ',' or ']'
+						if (ch == ']') break;
+					}
+				} catch (...) {
+					inventorySlots.clear();
+				}
+			}
+		}
+
+		// Parse unlocked blueprints
+		unlockedBlueprints.clear();
+		std::string blueprintsStr = findValue("unlockedBlueprints");
+		if (!blueprintsStr.empty() && blueprintsStr[0] == '[') {
+			try {
+				std::stringstream ss(blueprintsStr);
+				char ch;
+				ss >> ch; // skip '['
+
+				uint16_t blockID;
+				while (ss >> blockID) {
+					unlockedBlueprints.push_back(blockID);
+					ss >> ch; // skip ',' or ']'
+					if (ch == ']') break;
+				}
+			} catch (...) {
+				unlockedBlueprints.clear();
+			}
+		}
 
 		return true;
 	}

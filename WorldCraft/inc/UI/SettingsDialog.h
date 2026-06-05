@@ -1,6 +1,7 @@
 #pragma once
 
 #include <WorldGen/WorldSettings.h>
+#include <World/PhysicsSettings.h>
 #include <functional>
 
 namespace UI
@@ -13,6 +14,7 @@ namespace UI
 		using OnGoToPositionCallback = std::function<void(float x, float y, float z)>;
 		using OnTimeSettingsCallback = std::function<void(float timeOfDay, bool isPaused, bool useLiveTime)>;
 		using OnSaveWorldCallback = std::function<void()>;
+		using OnPhysicsSettingsCallback = std::function<void(const WorldPhysics::PhysicsSettings&)>;
 
 		SettingsDialog();
 
@@ -50,6 +52,12 @@ namespace UI
 			m_onSaveWorld = callback;
 		}
 
+		// Set callback for physics settings changes
+		void setPhysicsSettingsCallback(OnPhysicsSettingsCallback callback)
+		{
+			m_onPhysicsSettings = callback;
+		}
+
 		// Set current time (for external updates)
 		void setCurrentTime(float timeOfDay, bool isPaused, bool useLiveTime)
 		{
@@ -70,6 +78,10 @@ namespace UI
 		// Set settings (e.g., to restore from saved state)
 		void setSettings(const WorldGen::WorldSettings& settings) { m_settings = settings; }
 
+		// Physics settings access
+		void setPhysicsSettings(const WorldPhysics::PhysicsSettings& settings) { m_physicsSettings = settings; }
+		const WorldPhysics::PhysicsSettings& getPhysicsSettings() const { return m_physicsSettings; }
+
 	private:
 		void renderPresets();
 		void renderBasicSettings();
@@ -79,16 +91,19 @@ namespace UI
 		void renderOreSettings();
 		void renderTreeSettings();
 		void renderWaterSettings();
+		void renderPhysicsSettings();
 		void renderCameraSettings();
 		void renderTimeSettings();
 		void renderPersistenceSettings();
 		void renderGenerateButton();
 
 		WorldGen::WorldSettings m_settings;
+		WorldPhysics::PhysicsSettings m_physicsSettings;
 		OnGenerateWorldCallback m_onGenerateWorld;
 		OnGoToPositionCallback m_onGoToPosition;
 		OnTimeSettingsCallback m_onTimeSettings;
 		OnSaveWorldCallback m_onSaveWorld;
+		OnPhysicsSettingsCallback m_onPhysicsSettings;
 		bool m_isOpen = false;  // Start closed by default
 		int m_selectedPreset = 0;  // 0 = Default, 1 = Flat, 2 = Mountainous, etc.
 		int m_modifiedChunksCount = 0;

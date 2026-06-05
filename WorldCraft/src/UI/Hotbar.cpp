@@ -1,206 +1,178 @@
 #include <UI/Hotbar.h>
-
-#include <Texture/BlockTextures.h>
-#include <Voxel/BlockRegistry.h>
 #include <imgui.h>
-#include <cstdio>
 
 namespace UI
 {
 
-namespace
+Hotbar::Hotbar()
+	: m_visible(true)
 {
-	constexpr float kSlotSize = 48.0f;
-	constexpr float kSlotPadding = 6.0f;
-	constexpr float kIconPadding = 6.0f;
-
-	void createTextureFromPixels(const uint8_t* pixels, unsigned int& outTexture)
-	{
-		glGenTextures(1, &outTexture);
-		glBindTexture(GL_TEXTURE_2D, outTexture);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-			Texture::TEX_SIZE, Texture::TEX_SIZE,
-			0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-		glBindTexture(GL_TEXTURE_2D, 0);
-	}
 }
 
-void Hotbar::initialize()
+void Hotbar::render(const Inventory::PlayerInventory& inventory, int screenWidth, int screenHeight)
 {
-	if (m_initialized)
+	if (!m_visible)
 		return;
-	m_initialized = true;
-}
 
-void Hotbar::shutdown()
-{
-	for (auto& pair : m_layerIcons)
-	{
-		if (pair.second != 0)
-			glDeleteTextures(1, &pair.second);
-	}
-	m_layerIcons.clear();
-	m_initialized = false;
-}
+	// Calculate total width of hotbar based on current capacity
+	int numSlots = inventory.getCurrentCapacity();
+	float totalWidth = (SLOT_SIZE * numSlots) + (SLOT_PADDING * (numSlots - 1));
 
-void Hotbar::render(const Inventory::PlayerInventory& inventory, int screenW, int screenH)
-{
-	if (!m_initialized)
-		initialize();
+	// Center horizontally, position at bottom with padding
+	float startX = (screenWidth - totalWidth) * 0.5f;
+	float startY = screenHeight - HOTBAR_PADDING_BOTTOM - SLOT_SIZE;
 
-	const float totalWidth = Inventory::PlayerInventory::kHotbarSlots * kSlotSize +
-		(Inventory::PlayerInventory::kHotbarSlots - 1) * kSlotPadding;
-	const float startX = (static_cast<float>(screenW) - totalWidth) * 0.5f;
-	const float startY = static_cast<float>(screenH) - kSlotSize - 20.0f;
+	// Create invisible window to hold hotbar slots
+	ImGui::SetNextWindowPos(ImVec2(startX - 10.0f, startY - 10.0f));
+	ImGui::SetNextWindowSize(ImVec2(totalWidth + 20.0f, SLOT_SIZE + 40.0f));
 
-	ImGui::SetNextWindowPos(ImVec2(startX - 10.0f, startY - 10.0f), ImGuiCond_Always);
-	ImGui::SetNextWindowBgAlpha(0.0f);
-	ImGui::Begin("##HotbarOverlay", nullptr,
+	ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent background
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+
+	ImGui::Begin("##Hotbar", nullptr,
 		ImGuiWindowFlags_NoTitleBar |
 		ImGuiWindowFlags_NoResize |
 		ImGuiWindowFlags_NoMove |
 		ImGuiWindowFlags_NoScrollbar |
 		ImGuiWindowFlags_NoScrollWithMouse |
-		ImGuiWindowFlags_NoInputs |
-		ImGuiWindowFlags_AlwaysAutoResize);
+		ImGuiWindowFlags_NoCollapse |
+		ImGuiWindowFlags_NoBackground |
+		ImGuiWindowFlags_NoSavedSettings |
+		ImGuiWindowFlags_NoInputs);
 
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
-	ImVec2 base = ImGui::GetCursorScreenPos();
 
-	for (int i = 0; i < Inventory::PlayerInventory::kHotbarSlots; ++i)
+	// Render each slot
+	int selectedSlot = inventory.getSelectedSlot();
+	for (int i = 0; i < numSlots; ++i)
 	{
-		const float x = base.x + i * (kSlotSize + kSlotPadding);
-		const float y = base.y;
-		ImVec2 min(x, y);
-		ImVec2 max(x + kSlotSize, y + kSlotSize);
-
-		const bool selected = (i == inventory.getSelectedSlot());
-		ImU32 fillColor = selected ? IM_COL32(80, 120, 80, 220) : IM_COL32(50, 50, 50, 190);
-		ImU32 borderColor = selected ? IM_COL32(255, 220, 80, 255) : IM_COL32(170, 170, 170, 220);
-
-		drawList->AddRectFilled(min, max, fillColor, 4.0f);
-		drawList->AddRect(min, max, borderColor, 4.0f, 0, selected ? 3.0f : 1.5f);
-
-		const Inventory::InventorySlot& slot = inventory.getHotbarSlot(i);
-		if (!slot.isEmpty())
-		{
-			unsigned int icon = getIconForBlock(slot.blockId);
-			if (icon != 0)
-			{
-				drawList->AddImage(
-					ImTextureRef(static_cast<ImTextureID>(icon)),
-					ImVec2(x + kIconPadding, y + kIconPadding),
-					ImVec2(x + kSlotSize - kIconPadding, y + kSlotSize - kIconPadding));
-			}
-
-			if (slot.count > 1)
-			{
-				char countBuf[16];
-				std::snprintf(countBuf, sizeof(countBuf), "%d", slot.count);
-				ImVec2 textSize = ImGui::CalcTextSize(countBuf);
-				drawList->AddText(
-					ImVec2(x + kSlotSize - textSize.x - 4.0f, y + kSlotSize - textSize.y - 2.0f),
-					IM_COL32(255, 255, 255, 255),
-					countBuf);
-			}
-		}
+		float slotX = startX + i * (SLOT_SIZE + SLOT_PADDING);
+		const Inventory::Material& material = inventory.getMaterial(i);
+		const Inventory::InventorySlot& slot = inventory.getSlot(i);
+		renderSlot(i, material, slot, i == selectedSlot, slotX, startY);
 	}
 
-	ImGui::Dummy(ImVec2(totalWidth, kSlotSize));
+	// Display capacity info above hotbar (if expanded beyond base)
+	if (inventory.getCurrentCapacity() > Inventory::PlayerInventory::BASE_SLOTS || 
+		inventory.canExpandInventory())
+	{
+		char capacityText[64];
+		snprintf(capacityText, sizeof(capacityText), "Inventory: %d/%d slots", 
+				 inventory.getCurrentCapacity(), inventory.getMaxCapacity());
+
+		ImVec2 textSize = ImGui::CalcTextSize(capacityText);
+		ImVec2 textPos(startX + totalWidth * 0.5f - textSize.x * 0.5f, startY - textSize.y - 8.0f);
+
+		// Draw text shadow
+		drawList->AddText(ImVec2(textPos.x + 1, textPos.y + 1), IM_COL32(0, 0, 0, 200), capacityText);
+		drawList->AddText(textPos, IM_COL32(0, 200, 255, 255), capacityText);
+	}
+
 	ImGui::End();
+	ImGui::PopStyleVar(2);
+	ImGui::PopStyleColor();
 }
 
-unsigned int Hotbar::getIconForBlock(Voxel::BlockID blockId)
+void Hotbar::renderSlot(int slotIndex, const Inventory::Material& material, 
+						const Inventory::InventorySlot& slot, bool isSelected, float posX, float posY)
 {
-	if (blockId == Voxel::BlockID::Air)
-		return 0;
+	ImDrawList* drawList = ImGui::GetBackgroundDrawList();
 
-	const Voxel::BlockRegistry& registry = Voxel::BlockRegistry::get();
-	const int layer = registry.texLayer(blockId, Voxel::FaceDir::PosY);
-	return getOrCreateLayerIcon(layer);
-}
+	// Slot bounds
+	ImVec2 slotMin(posX, posY);
+	ImVec2 slotMax(posX + SLOT_SIZE, posY + SLOT_SIZE);
 
-unsigned int Hotbar::getOrCreateLayerIcon(int layer)
-{
-	auto it = m_layerIcons.find(layer);
-	if (it != m_layerIcons.end())
-		return it->second;
+	// Slot background color (sci-fi dark with glow)
+	ImU32 bgColor = isSelected 
+		? IM_COL32(0, 100, 150, 200)      // Cyan glow for selected
+		: IM_COL32(20, 20, 30, 180);      // Dark background for unselected
 
-	uint8_t pixels[Texture::TEX_SIZE * Texture::TEX_SIZE * 4] = {};
-	if (!generateLayerPixels(layer, pixels, static_cast<int>(sizeof(pixels))))
-		return 0;
+	// Border color
+	ImU32 borderColor = isSelected
+		? IM_COL32(0, 200, 255, 255)      // Bright cyan for selected
+		: IM_COL32(80, 80, 100, 200);     // Gray for unselected
 
-	unsigned int texture = 0;
-	createTextureFromPixels(pixels, texture);
-	m_layerIcons[layer] = texture;
-	return texture;
-}
+	float borderThickness = isSelected ? 3.0f : 2.0f;
 
-bool Hotbar::generateLayerPixels(int layer, uint8_t* pixels, int pixelCount)
-{
-	if (!pixels || pixelCount < Texture::TEX_SIZE * Texture::TEX_SIZE * 4)
-		return false;
+	// Draw slot background
+	drawList->AddRectFilled(slotMin, slotMax, bgColor, 4.0f);
 
-	using GenFn = void(*)(Texture::TextureArray::PixelBuf);
-	static const GenFn generators[Texture::TOTAL_LAYERS] = {
-		Texture::TextureArray::genStone,
-		Texture::TextureArray::genDirt,
-		Texture::TextureArray::genGrassTop,
-		Texture::TextureArray::genGrassSide,
-		Texture::TextureArray::genSand,
-		Texture::TextureArray::genWoodTop,
-		Texture::TextureArray::genWoodSide,
-		Texture::TextureArray::genLeaf,
-		Texture::TextureArray::genBedrock,
-		Texture::TextureArray::genGravel,
-		Texture::TextureArray::genSnow,
-		Texture::TextureArray::genWater,
-		Texture::TextureArray::genCoalOre,
-		Texture::TextureArray::genIronOre,
-		Texture::TextureArray::genGoldOre,
-		Texture::TextureArray::genDiamondOre,
-		Texture::TextureArray::genRedstoneOre,
-		Texture::TextureArray::genLapisOre,
-		Texture::TextureArray::genEmeraldOre,
-		Texture::TextureArray::genObsidian,
-		Texture::TextureArray::genGrassTop1,
-		Texture::TextureArray::genGrassTop2,
-		Texture::TextureArray::genGrassTop3,
-		Texture::TextureArray::genGrassTop4,
-		Texture::TextureArray::genGrassTop5,
-		Texture::TextureArray::genGrassTop6,
-		Texture::TextureArray::genGrassTop7,
-		Texture::TextureArray::genGrassTop8,
-		Texture::TextureArray::genGrassSide1,
-		Texture::TextureArray::genGrassSide2,
-		Texture::TextureArray::genGrassSide3,
-		Texture::TextureArray::genGrassSide4,
-		Texture::TextureArray::genGrassSide5,
-		Texture::TextureArray::genGrassSide6,
-		Texture::TextureArray::genGrassSide7,
-		Texture::TextureArray::genGrassSide8,
-		Texture::TextureArray::genRock1,
-		Texture::TextureArray::genRock2,
-		Texture::TextureArray::genRock3,
-		Texture::TextureArray::genRock4,
-		Texture::TextureArray::genRock5,
-		Texture::TextureArray::genRock6,
-		Texture::TextureArray::genRock7,
-		Texture::TextureArray::genRock8,
-		Texture::TextureArray::genMushroom,
-		Texture::TextureArray::genTorch,
-	};
+	// Draw border
+	drawList->AddRect(slotMin, slotMax, borderColor, 4.0f, 0, borderThickness);
 
-	if (layer < 0 || layer >= Texture::TOTAL_LAYERS)
-		return false;
+	// Draw slot number in top-left corner
+	char slotNumText[8];
+	snprintf(slotNumText, sizeof(slotNumText), "%d", (slotIndex + 1));
+	ImVec2 textPos(posX + 4.0f, posY + 2.0f);
+	drawList->AddText(textPos, IM_COL32(200, 200, 200, 255), slotNumText);
 
-	auto* buf = reinterpret_cast<Texture::TextureArray::PixelBuf*>(pixels);
-	generators[layer](*buf);
-	return true;
+	// Draw material if slot has items
+	if (!slot.isEmpty())
+	{
+		// Material icon placeholder (colored square representing block type)
+		ImVec2 iconMin(posX + SLOT_SIZE * 0.25f, posY + SLOT_SIZE * 0.3f);
+		ImVec2 iconMax(posX + SLOT_SIZE * 0.75f, posY + SLOT_SIZE * 0.7f);
+
+		// Color based on category
+		ImU32 iconColor = IM_COL32(150, 150, 150, 255); // Default gray
+
+		switch (material.category)
+		{
+		case Inventory::MaterialCategory::Structure:  iconColor = IM_COL32(120, 120, 150, 255); break; // Blue-gray
+		case Inventory::MaterialCategory::Energy:     iconColor = IM_COL32(200, 180, 50, 255);  break; // Gold
+		case Inventory::MaterialCategory::Tech:       iconColor = IM_COL32(50, 150, 200, 255);  break; // Cyan
+		case Inventory::MaterialCategory::Defensive:  iconColor = IM_COL32(150, 50, 50, 255);   break; // Red
+		case Inventory::MaterialCategory::Lighting:   iconColor = IM_COL32(200, 200, 100, 255); break; // Yellow
+		case Inventory::MaterialCategory::Natural:    iconColor = IM_COL32(100, 180, 100, 255); break; // Green
+		case Inventory::MaterialCategory::Special:    iconColor = IM_COL32(180, 100, 200, 255); break; // Purple
+		default: break;
+		}
+
+		drawList->AddRectFilled(iconMin, iconMax, iconColor, 2.0f);
+
+		// Draw stack count in bottom-right corner
+		if (slot.stackCount > 1)
+		{
+			char stackText[16];
+			snprintf(stackText, sizeof(stackText), "%d", slot.stackCount);
+			ImVec2 stackTextSize = ImGui::CalcTextSize(stackText);
+			ImVec2 stackPos(posX + SLOT_SIZE - stackTextSize.x - 4.0f, 
+							posY + SLOT_SIZE - stackTextSize.y - 2.0f);
+
+			// Draw text shadow
+			drawList->AddText(ImVec2(stackPos.x + 1, stackPos.y + 1), IM_COL32(0, 0, 0, 255), stackText);
+			drawList->AddText(stackPos, IM_COL32(255, 255, 255, 255), stackText);
+		}
+
+		// Material name below slot (only for selected)
+		if (isSelected)
+		{
+			ImVec2 namePos(posX + SLOT_SIZE * 0.5f, posY + SLOT_SIZE + 5.0f);
+			ImVec2 textSize = ImGui::CalcTextSize(material.name.c_str());
+			namePos.x -= textSize.x * 0.5f; // Center text
+
+			// Draw text shadow for readability
+			drawList->AddText(ImVec2(namePos.x + 1, namePos.y + 1), IM_COL32(0, 0, 0, 200), material.name.c_str());
+			drawList->AddText(namePos, IM_COL32(0, 255, 255, 255), material.name.c_str());
+		}
+	}
+	else
+	{
+		// Empty slot indicator
+		ImVec2 crossCenter(posX + SLOT_SIZE * 0.5f, posY + SLOT_SIZE * 0.5f);
+		float crossSize = SLOT_SIZE * 0.2f;
+		ImU32 crossColor = IM_COL32(80, 80, 80, 150);
+
+		drawList->AddLine(
+			ImVec2(crossCenter.x - crossSize, crossCenter.y - crossSize),
+			ImVec2(crossCenter.x + crossSize, crossCenter.y + crossSize),
+			crossColor, 1.5f);
+		drawList->AddLine(
+			ImVec2(crossCenter.x + crossSize, crossCenter.y - crossSize),
+			ImVec2(crossCenter.x - crossSize, crossCenter.y + crossSize),
+			crossColor, 1.5f);
+	}
 }
 
 } // namespace UI

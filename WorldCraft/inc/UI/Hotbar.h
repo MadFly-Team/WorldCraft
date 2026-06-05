@@ -1,25 +1,37 @@
 #pragma once
 
 #include <Inventory/Inventory.h>
-#include <unordered_map>
 
 namespace UI
 {
 
+// ---------------------------------------------------------------------------
+// Hotbar HUD - Displays 9-slot inventory bar at bottom of screen
+// ---------------------------------------------------------------------------
 class Hotbar
 {
 public:
-	void initialize();
-	void shutdown();
-	void render(const Inventory::PlayerInventory& inventory, int screenW, int screenH);
+	Hotbar();
+
+	// Render the hotbar (call every frame)
+	void render(const Inventory::PlayerInventory& inventory, int screenWidth, int screenHeight);
+
+	// Show/hide the hotbar
+	void show() { m_visible = true; }
+	void hide() { m_visible = false; }
+	bool isVisible() const { return m_visible; }
 
 private:
-	std::unordered_map<int, unsigned int> m_layerIcons;
-	bool m_initialized = false;
+	bool m_visible;
 
-	unsigned int getIconForBlock(Voxel::BlockID blockId);
-	unsigned int getOrCreateLayerIcon(int layer);
-	static bool generateLayerPixels(int layer, uint8_t* pixels, int pixelCount);
+	// Visual settings
+	static constexpr float SLOT_SIZE = 50.0f;
+	static constexpr float SLOT_PADDING = 5.0f;
+	static constexpr float HOTBAR_PADDING_BOTTOM = 20.0f;
+
+	// Render a single hotbar slot
+	void renderSlot(int slotIndex, const Inventory::Material& material, 
+					const Inventory::InventorySlot& slot, bool isSelected, float posX, float posY);
 };
 
 } // namespace UI
