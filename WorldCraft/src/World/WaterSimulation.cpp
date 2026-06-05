@@ -1,4 +1,4 @@
-#include <World/WaterSimulation.h>
+﻿#include <World/WaterSimulation.h>
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -1450,3 +1450,4 @@ bool WaterSimulation::hasWater(const Position& pos) const
 }
 
 } // namespace World
+

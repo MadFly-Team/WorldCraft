@@ -1,5 +1,19 @@
 # WorldCraft
 
+## Project on hold
+
+This project was to see if the AI, with some human guidance, could create a fully functional voxel-based world exploration game similar to Minecraft. The core systems were implemented, including procedural terrain generation, cave systems, LOD rendering, and block manipulation. However, the project is currently on hold as the AI-generated code requires significant manual refinement and optimization to reach a playable state.
+
+However, I am putting this on hold for two reasons:
+
+1. AI seems not to listen. I have given it very specific instructions on how to implement features, but it often ignores them and produces code that doesn't work or is inefficient. This leads to a lot of wasted time and effort trying to fix the AI's mistakes.
+2. Cost. Running the AI for a project of this scope is expensive, and the amount of trial and error required to get it to produce usable code is not sustainable.
+
+It is a shame, as I was enjoying the process and the project has a lot of potential. I may revisit it in the future when AI technology has improved and can better understand and follow instructions. For now, I will focus on other projects that are more manageable and less costly.
+
+# The Brief
+
+
 A high-performance voxel-based world exploration game built with modern C++20 and OpenGL, featuring procedurally generated terrain, dynamic cave systems, multi-level LOD rendering, and interactive block manipulation.
 
 ![WorldCraft Screenshot](docs/images/worldcraft1.jpg)

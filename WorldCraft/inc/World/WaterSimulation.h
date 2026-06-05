@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Chunk/ChunkWorld.h>
 #include <Voxel/BlockTypes.h>
