@@ -2,7 +2,7 @@
 
 ## Project on hold
 
-This project was to see if the AI, with some human guidance, could create a fully functional voxel-based world exploration game similar to Minecraft. The core systems were implemented, including procedural terrain generation, cave systems, LOD rendering, and block manipulation. However, the project is currently on hold as the AI-generated code requires significant manual refinement and optimization to reach a playable state.
+This project was to see if the AI, with some human guidance and no human code added, could create a fully functional voxel-based world exploration game similar to Minecraft. The core systems were implemented, including procedural terrain generation, cave systems, LOD rendering, and block manipulation. However, the project is currently on hold as the AI-generated code requires significant manual refinement and optimization to reach a playable state.
 
 However, I am putting this on hold for two reasons:
 
