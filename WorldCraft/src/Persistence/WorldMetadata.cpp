@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <random>
 #include <cstring>
+#include <algorithm>
 
 namespace Persistence
 {
@@ -99,6 +100,25 @@ std::string WorldMetadata::toJSON() const
 	ss << "    \"timeOfDay\": " << timeOfDay << ",\n";
 	ss << "    \"timePaused\": " << (timePaused ? "true" : "false") << ",\n";
 	ss << "    \"useLiveTime\": " << (useLiveTime ? "true" : "false") << "\n";
+	ss << "  },\n";
+
+	// Inventory state (additive for backward compatibility)
+	auto writeArray = [&ss](const auto& arr) {
+		ss << "[";
+		for (size_t i = 0; i < arr.size(); ++i)
+		{
+			if (i > 0) ss << ", ";
+			ss << arr[i];
+		}
+		ss << "]";
+	};
+
+	ss << "  \"inventory\": {\n";
+	ss << "    \"selectedHotbarSlot\": " << selectedHotbarSlot << ",\n";
+	ss << "    \"hotbarBlockIds\": "; writeArray(hotbarBlockIds); ss << ",\n";
+	ss << "    \"hotbarCounts\": "; writeArray(hotbarCounts); ss << ",\n";
+	ss << "    \"personalBlockIds\": "; writeArray(personalBlockIds); ss << ",\n";
+	ss << "    \"personalCounts\": "; writeArray(personalCounts); ss << "\n";
 	ss << "  }\n";
 
 	ss << "}\n";
@@ -184,6 +204,25 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		}
 	};
 
+	auto parseUInt16Array = [&findValue](const std::string& key, auto& outputArray) {
+		std::string value = findValue(key);
+		if (value.empty() || value.front() != '[')
+			return;
+
+		std::stringstream ss(value.substr(1, value.size() - 2));
+		for (size_t i = 0; i < outputArray.size(); ++i)
+		{
+			int v = 0;
+			if (!(ss >> v))
+				break;
+			outputArray[i] = static_cast<uint16_t>(std::clamp(v, 0, 65535));
+			if (ss.peek() == ',')
+				ss.ignore();
+			while (ss.peek() == ' ')
+				ss.ignore();
+		}
+	};
+
 	try {
 		formatVersion = safeParseInt("formatVersion", SAVE_FORMAT_VERSION);
 		worldName = findValue("worldName");
@@ -247,6 +286,12 @@ bool WorldMetadata::fromJSON(const std::string& json)
 		timeOfDay = safeParseFloat("timeOfDay", 0.22f);
 		timePaused = safeParseBool("timePaused", false);
 		useLiveTime = safeParseBool("useLiveTime", false);
+
+		selectedHotbarSlot = safeParseInt("selectedHotbarSlot", 0);
+		parseUInt16Array("hotbarBlockIds", hotbarBlockIds);
+		parseUInt16Array("hotbarCounts", hotbarCounts);
+		parseUInt16Array("personalBlockIds", personalBlockIds);
+		parseUInt16Array("personalCounts", personalCounts);
 
 		return true;
 	}

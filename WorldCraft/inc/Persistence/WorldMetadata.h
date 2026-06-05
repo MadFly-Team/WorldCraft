@@ -4,6 +4,8 @@
 #include <glm/glm.hpp>
 #include <string>
 #include <ctime>
+#include <array>
+#include <cstdint>
 
 namespace Persistence
 {
@@ -40,6 +42,13 @@ namespace Persistence
 		float timeOfDay = 0.22f;
 		bool timePaused = false;
 		bool useLiveTime = false;
+
+		// Inventory state
+		std::array<uint16_t, 10> hotbarBlockIds{};
+		std::array<uint16_t, 10> hotbarCounts{};
+		std::array<uint16_t, 40> personalBlockIds{};
+		std::array<uint16_t, 40> personalCounts{};
+		int selectedHotbarSlot = 0;
 
 		// Statistics
 		uint64_t totalPlayTime = 0;  // Total play time in seconds

@@ -18,9 +18,15 @@
 #include <UI/WorldSelectionDialog.h>
 #include <UI/WorldNameDialog.h>
 #include <UI/SaveConfirmationDialog.h>
+#include <UI/Hotbar.h>
+#include <UI/InventoryUI.h>
+#include <Inventory/Inventory.h>
 #include <WorldGen/WorldSettings.h>
 #include <Persistence/WorldPersistence.h>
 #include <Utils/Raycast.h>
+#include <Renderer/FallingBlockRenderer.h>
+#include <World/BlockPhysics.h>
+#include <World/FallingBlock.h>
 #include <imgui.h>
 #include <thread>
 #include <chrono>
@@ -504,12 +510,14 @@ int main()
         GLint  skyTimeLoc = -1;
         GLuint skyVAO = 0;
 
-        Renderer::WireframeCube wireframeCube;  // Block highlight renderer
+        Renderer::WireframeCube wireframeCube;          // Block highlight renderer
+        Renderer::FallingBlockRenderer fallingBlockRenderer; // Falling/held physics block renderer
     };
 
     auto destroyRenderResources = [](RenderResources& rr)
     {
         rr.wireframeCube.cleanup();
+        rr.fallingBlockRenderer.destroy();
         if (rr.skyVAO)
         {
             glDeleteVertexArrays(1, &rr.skyVAO);
@@ -563,6 +571,9 @@ int main()
 
         // Initialize wireframe cube for block highlighting
         rr.wireframeCube.init();
+
+        // Initialize falling block renderer (for held/thrown blocks)
+        rr.fallingBlockRenderer.init();
     };
 
     // ---- Window & GL context ------------------------------------------------
@@ -591,6 +602,9 @@ int main()
     UI::WorldSelectionDialog worldSelectionDialog;
     UI::WorldNameDialog worldNameDialog;
     UI::SaveConfirmationDialog saveConfirmationDialog;
+    UI::Hotbar hotbar;
+    UI::InventoryUI inventoryUI;
+    Inventory::PlayerInventory playerInventory;
     bool isInitialLoadComplete = false;
 
     // ---- Camera System ------------------------------------------------------
@@ -657,9 +671,35 @@ int main()
     WorldGen::WorldSettings currentSettings = worldMetadata.settings;
     auto world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
 
+    // Restore inventory from metadata (older saves may not contain personal slots)
+    playerInventory.loadFromMetadata(worldMetadata);
+
     // ---- Water Simulation ---------------------------------------------------
     World::WaterSimulation waterSim;
     float waterTickAccumulator = 0.0f;
+
+    // ---- Block Physics System -----------------------------------------------
+    auto blockPhysics = std::make_unique<WorldPhysics::BlockPhysics>(world.get());
+    blockPhysics->setWaterNotifyCallback([&waterSim, &world, &cameraMode, &flyCamera, &charCamera, &chaseCamera](int x, int y, int z) {
+        if (!world) return;
+        const int SCAN_RADIUS = 3;
+        for (int dy = -SCAN_RADIUS; dy <= SCAN_RADIUS; ++dy)
+            for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; ++dx)
+                for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; ++dz)
+                {
+                    int cx = x + dx, cy = y + dy, cz = z + dz;
+                    if (world->getBlockAt(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)) == Voxel::BlockID::Water
+                        && !waterSim.hasSource(cx, cy, cz))
+                        waterSim.registerSource(cx, cy, cz);
+                }
+        waterSim.notifyBlockChange(x, y, z);
+        waterSim.queueDelayedScan(x, y, z);
+        glm::vec3 playerPos;
+        if (cameraMode == CameraMode::FreeFly)       playerPos = flyCamera.position();
+        else if (cameraMode == CameraMode::Character) playerPos = charCamera.position();
+        else                                          playerPos = chaseCamera.position();
+        waterSim.update(world.get(), playerPos, 64.0f);
+    });
 
     // Callback for when user generates a new world
     bool needsWorldRegeneration = false;
@@ -741,6 +781,7 @@ int main()
         worldMetadata.timeOfDay = timeOfDay;
         worldMetadata.timePaused = timePaused;
         worldMetadata.useLiveTime = useLiveTime;
+        playerInventory.saveToMetadata(worldMetadata);
 
         persistence->saveMetadata(worldMetadata);
 
@@ -790,6 +831,7 @@ int main()
             worldMetadata.timeOfDay = timeOfDay;
             worldMetadata.timePaused = timePaused;
             worldMetadata.useLiveTime = useLiveTime;
+            playerInventory.saveToMetadata(worldMetadata);
 
             persistence->saveMetadata(worldMetadata);
 
@@ -891,6 +933,7 @@ int main()
                 worldMetadata.timePaused = timePaused;
                 worldMetadata.useLiveTime = useLiveTime;
                 worldMetadata.lastPlayedTime = std::time(nullptr);
+                playerInventory.saveToMetadata(worldMetadata);
 
                 persistence->saveMetadata(worldMetadata);
                 std::cout << "[WorldSelection] Saved " << savedCount << " chunks from previous world" << std::endl;
@@ -930,6 +973,9 @@ int main()
             timePaused = worldMetadata.timePaused;
             useLiveTime = worldMetadata.useLiveTime;
             settingsDialog.setCurrentTime(timeOfDay, timePaused, useLiveTime);
+
+            // Restore inventory state
+            playerInventory.loadFromMetadata(worldMetadata);
         }
         else
         {
@@ -972,6 +1018,15 @@ int main()
     bool shouldQuit = false;
     bool characterTorchEnabled = false;  // Toggle for character's torch light
 
+    // G-key grab/throw state
+    bool isHoldingGrabbedBlock = false;
+    bool isGrabThrowCharging = false;
+    float throwChargeTime = 0.0f;
+    Voxel::BlockID grabbedBlockType = Voxel::BlockID::Air;
+    constexpr float MIN_THROW_SPEED = 5.0f;
+    constexpr float MAX_THROW_SPEED = 25.0f;
+    constexpr float MAX_CHARGE_TIME = 2.0f;
+
     // Auto-save system
     float autoSaveTimer = 0.0f;
     constexpr float AUTO_SAVE_INTERVAL = 300.0f;  // Auto-save every 5 minutes (300 seconds)
@@ -993,8 +1048,9 @@ int main()
         bool dialogOpen = settingsDialog.isOpen() || worldSelectionDialog.isOpen() || worldNameDialog.isOpen() || saveConfirmationDialog.isOpen();
         bool menuOpen = gameMenu.isVisible();
         bool loading = loadingScreen.isActive();
-        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || loading) ? SDL_FALSE : SDL_TRUE);
-        SDL_ShowCursor((dialogOpen || menuOpen || loading) ? SDL_ENABLE : SDL_DISABLE);
+        bool inventoryOpen = inventoryUI.isOpen();
+        SDL_SetRelativeMouseMode((dialogOpen || menuOpen || loading || inventoryOpen) ? SDL_FALSE : SDL_TRUE);
+        SDL_ShowCursor((dialogOpen || menuOpen || loading || inventoryOpen) ? SDL_ENABLE : SDL_DISABLE);
 
         // Poll SDL events
         SDL_Event event;
@@ -1035,7 +1091,19 @@ int main()
                     // Alt+Enter toggles fullscreen (standard game shortcut)
                     Renderer::toggleFullscreen(window);
                 }
-                else if (event.key.keysym.sym == SDLK_c && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_i && !dialogOpen && !menuOpen)
+                {
+                    inventoryUI.toggle();
+                }
+                else if (event.key.keysym.sym >= SDLK_1 && event.key.keysym.sym <= SDLK_9 && !dialogOpen && !menuOpen && !inventoryOpen)
+                {
+                    playerInventory.setSelectedSlot(static_cast<int>(event.key.keysym.sym - SDLK_1));
+                }
+                else if (event.key.keysym.sym == SDLK_0 && !dialogOpen && !menuOpen && !inventoryOpen)
+                {
+                    playerInventory.setSelectedSlot(9);
+                }
+                else if (event.key.keysym.sym == SDLK_c && !dialogOpen && !inventoryOpen)
                 {
                     // 'C' key toggles camera mode (when dialog closed and not loading)
                     if (cameraMode == CameraMode::FreeFly)
@@ -1055,15 +1123,18 @@ int main()
                         flyCamera.setOrientation(charCamera.yaw(), charCamera.pitch());
                     }
                 }
-                else if (event.key.keysym.sym == SDLK_t && !dialogOpen)
+                else if (event.key.keysym.sym == SDLK_t && !dialogOpen && !inventoryOpen)
                 {
                     // 'T' key toggles character torch light
                     characterTorchEnabled = !characterTorchEnabled;
                 }
                 else if (event.key.keysym.sym == SDLK_ESCAPE && !dialogOpen)
                 {
-                    // ESC closes menu if open, otherwise quits
-                    if (gameMenu.isVisible())
+                    if (inventoryOpen)
+                    {
+                        inventoryUI.close();
+                    }
+                    else if (gameMenu.isVisible())
                     {
                         gameMenu.hide();
                     }
@@ -1098,6 +1169,28 @@ int main()
             world = std::make_unique<Chunk::ChunkWorld>(currentSettings, persistence.get());
             waterSim.clear();  // Clear water simulation state
             waterTickAccumulator = 0.0f;
+            blockPhysics.reset();
+            blockPhysics = std::make_unique<WorldPhysics::BlockPhysics>(world.get());
+            blockPhysics->setWaterNotifyCallback([&waterSim, &world, &cameraMode, &flyCamera, &charCamera, &chaseCamera](int x, int y, int z) {
+                if (!world) return;
+                const int SCAN_RADIUS = 3;
+                for (int dy = -SCAN_RADIUS; dy <= SCAN_RADIUS; ++dy)
+                    for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; ++dx)
+                        for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; ++dz)
+                        {
+                            int cx = x + dx, cy = y + dy, cz = z + dz;
+                            if (world->getBlockAt(static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(cz)) == Voxel::BlockID::Water
+                                && !waterSim.hasSource(cx, cy, cz))
+                                waterSim.registerSource(cx, cy, cz);
+                        }
+                waterSim.notifyBlockChange(x, y, z);
+                waterSim.queueDelayedScan(x, y, z);
+                glm::vec3 playerPos;
+                if (cameraMode == CameraMode::FreeFly)       playerPos = flyCamera.position();
+                else if (cameraMode == CameraMode::Character) playerPos = charCamera.position();
+                else                                          playerPos = chaseCamera.position();
+                waterSim.update(world.get(), playerPos, 64.0f);
+            });
             needsWorldRegeneration = false;
 
             // Reset loading screen for new world
@@ -1106,7 +1199,7 @@ int main()
         }
 
         // Only update camera when not loading and (dialog/menu is closed OR chase mode is active)
-        if (!loading && !menuOpen && (!dialogOpen || cameraMode == CameraMode::Chase))
+        if (!loading && !menuOpen && !inventoryOpen && (!dialogOpen || cameraMode == CameraMode::Chase))
         {
             if (cameraMode == CameraMode::FreeFly)
                 flyCamera.update(window, delta);
@@ -1140,79 +1233,275 @@ int main()
             }
         }
 
-        // ---- Block targeting and removal (Character camera only) ----------------
+        // ---- Block targeting and interaction (Character camera only) ------------
         std::optional<Utils::RaycastHit> targetBlock;
-        if (!loading && !dialogOpen && cameraMode == CameraMode::Character && world)
+        if (!loading && !dialogOpen && !inventoryOpen && cameraMode == CameraMode::Character && world)
         {
-            // Perform raycast from camera eye position along look direction
             glm::vec3 rayOrigin = charCamera.position();
             glm::vec3 rayDir = charCamera.forward();
-            constexpr float maxReach = 5.0f;  // Minecraft-style reach distance
+            constexpr float maxReach = 5.0f;
 
-            // Raycast through voxels to find target block
             targetBlock = Utils::raycastVoxel(rayOrigin, rayDir, maxReach,
                 [&world](int x, int y, int z) -> bool {
-                    // Check if this voxel is solid (not air/water)
                     return world->isBlockSolid(static_cast<float>(x),
                                                static_cast<float>(y),
                                                static_cast<float>(z));
                 });
 
-            // Handle right mouse button to remove block
             Uint32 mouseState = SDL_GetMouseState(nullptr, nullptr);
+            static bool wasLeftPressed = false;
             static bool wasRightPressed = false;
-            bool isRightPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+            static bool wasGPressed = false;
+            const bool isLeftPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+            const bool isRightPressed = (mouseState & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+            const Uint8* keyboardState = SDL_GetKeyboardState(nullptr);
+            const bool isGPressed = keyboardState[SDL_SCANCODE_G] != 0;
 
-            if (isRightPressed && !wasRightPressed && targetBlock.has_value())
+            if (isLeftPressed && !wasLeftPressed && targetBlock.has_value())
             {
-                // Remove the targeted block (set to air)
                 const glm::ivec3& blockPos = targetBlock->blockPos;
-
-                // Prevent removal of bedrock layer at Y=0 (indestructible bottom)
-                if (blockPos.y == 0)
+                if (blockPos.y != 0)
                 {
-                    wasRightPressed = isRightPressed;
-                    continue;
-                }
+                    Voxel::BlockID removedBlock = world->getBlockAt(
+                        static_cast<float>(blockPos.x),
+                        static_cast<float>(blockPos.y),
+                        static_cast<float>(blockPos.z));
 
-                world->setBlockAt(static_cast<float>(blockPos.x),
-                                 static_cast<float>(blockPos.y),
-                                 static_cast<float>(blockPos.z),
-                                 Voxel::BlockID::Air);
+                    bool wasWater = (removedBlock == Voxel::BlockID::Water);
 
-                // Mark surrounding water blocks for flow updates
-                if (currentSettings.enableWaterFlow)
-                {
-                    // Check all 6 neighbors for water
-                    const int dx[] = { 1, -1, 0, 0, 0, 0 };
-                    const int dy[] = { 0, 0, 1, -1, 0, 0 };
-                    const int dz[] = { 0, 0, 0, 0, 1, -1 };
+                    world->setBlockAt(static_cast<float>(blockPos.x),
+                                     static_cast<float>(blockPos.y),
+                                     static_cast<float>(blockPos.z),
+                                     Voxel::BlockID::Air);
 
-                    for (int i = 0; i < 6; ++i)
+                    if (removedBlock != Voxel::BlockID::Air && removedBlock != Voxel::BlockID::Water)
                     {
-                        int nx = blockPos.x + dx[i];
-                        int ny = blockPos.y + dy[i];
-                        int nz = blockPos.z + dz[i];
-
-                        Voxel::BlockID neighborBlock = world->getBlockAt(
-                            static_cast<float>(nx),
-                            static_cast<float>(ny),
-                            static_cast<float>(nz));
-
-                        if (neighborBlock == Voxel::BlockID::Water)
+                        int added = playerInventory.addPickedUpItem(removedBlock, 1);
+                        if (added == 0)
                         {
-                            waterSim.markForUpdate(nx, ny, nz);
+                            // Inventory full - eject block with half throw power
+                            glm::vec3 throwDirection;
+                            glm::vec3 throwOrigin;
+                            if (cameraMode == CameraMode::FreeFly)
+                            {
+                                throwDirection = flyCamera.forward();
+                                throwOrigin = flyCamera.position() + throwDirection * 2.0f;
+                            }
+                            else if (cameraMode == CameraMode::Character)
+                            {
+                                throwDirection = charCamera.forward();
+                                throwOrigin = charCamera.position() + throwDirection * 2.0f;
+                            }
+                            else
+                            {
+                                throwDirection = chaseCamera.forward();
+                                throwOrigin = chaseCamera.position() + throwDirection * 2.0f;
+                            }
+                            const float HALF_THROW_SPEED = 15.0f;
+                            auto fallingBlock = std::make_unique<WorldPhysics::FallingBlock>(removedBlock, throwOrigin);
+                            fallingBlock->setVelocity(glm::normalize(throwDirection) * HALF_THROW_SPEED);
+                            if (blockPhysics)
+                                blockPhysics->addFallingBlock(std::move(fallingBlock));
+                        }
+                    }
+
+                    // If we removed a water block, clean up its source and flow
+                    if (wasWater && currentSettings.enableWaterFlow)
+                    {
+                        waterSim.removeSource(blockPos.x, blockPos.y, blockPos.z, world.get());
+                    }
+
+                    // Notify water simulation that a block changed
+                    if (currentSettings.enableWaterFlow)
+                    {
+                        // Scan a 7x7x7 cube around the removed block and register any
+                        // unregistered water blocks as sources so they flow into the gap
+                        const int SCAN_RADIUS = 3;
+                        for (int dy = -SCAN_RADIUS; dy <= SCAN_RADIUS; ++dy)
+                        {
+                            for (int dx = -SCAN_RADIUS; dx <= SCAN_RADIUS; ++dx)
+                            {
+                                for (int dz = -SCAN_RADIUS; dz <= SCAN_RADIUS; ++dz)
+                                {
+                                    int checkX = blockPos.x + dx;
+                                    int checkY = blockPos.y + dy;
+                                    int checkZ = blockPos.z + dz;
+                                    Voxel::BlockID block = world->getBlockAt(
+                                        static_cast<float>(checkX),
+                                        static_cast<float>(checkY),
+                                        static_cast<float>(checkZ));
+                                    if (block == Voxel::BlockID::Water && !waterSim.hasSource(checkX, checkY, checkZ))
+                                    {
+                                        waterSim.registerSource(checkX, checkY, checkZ);
+                                    }
+                                }
+                            }
+                        }
+
+                        waterSim.notifyBlockChange(blockPos.x, blockPos.y, blockPos.z);
+                        waterSim.queueDelayedScan(blockPos.x, blockPos.y, blockPos.z);
+
+                        // Force an immediate water update so flow starts at once
+                        glm::vec3 playerPos;
+                        if (cameraMode == CameraMode::FreeFly)
+                            playerPos = flyCamera.position();
+                        else if (cameraMode == CameraMode::Character)
+                            playerPos = charCamera.position();
+                        else
+                            playerPos = chaseCamera.position();
+                        waterSim.update(world.get(), playerPos, 64.0f);
+                    }
+
+                    // Check for blocks that should now fall due to loss of support
+                    if (blockPhysics)
+                    {
+                        int fallCount = 0;
+                        for (int y = -2; y <= 7; ++y)
+                        {
+                            for (int x = -2; x <= 2; ++x)
+                            {
+                                for (int z = -2; z <= 2; ++z)
+                                {
+                                    glm::ivec3 checkPos = blockPos + glm::ivec3(x, y, z);
+                                    if (blockPhysics->shouldBlockFall(checkPos))
+                                    {
+                                        blockPhysics->triggerBlockFall(checkPos);
+                                        fallCount++;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
+            if (isRightPressed && !wasRightPressed && targetBlock.has_value())
+            {
+                const Inventory::InventorySlot& selectedSlot = playerInventory.getHotbarSlot(playerInventory.getSelectedSlot());
+                if (!selectedSlot.isEmpty())
+                {
+                    const glm::ivec3& hitPos = targetBlock->blockPos;
+                    const Voxel::FaceDir face = targetBlock->face;
+                    const int faceIndex = static_cast<int>(face);
+
+                    const int placeX = hitPos.x + Voxel::FaceOffsetX[faceIndex];
+                    const int placeY = hitPos.y + Voxel::FaceOffsetY[faceIndex];
+                    const int placeZ = hitPos.z + Voxel::FaceOffsetZ[faceIndex];
+
+                    Voxel::BlockID existing = world->getBlockAt(static_cast<float>(placeX), static_cast<float>(placeY), static_cast<float>(placeZ));
+                    if (existing == Voxel::BlockID::Air || existing == Voxel::BlockID::Water)
+                    {
+                        world->setBlockAt(static_cast<float>(placeX),
+                                         static_cast<float>(placeY),
+                                         static_cast<float>(placeZ),
+                                         selectedSlot.blockId);
+                        playerInventory.consumeSelectedItem(1);
+
+                        // If placing water, register it as a source for the simulation
+                        if (selectedSlot.blockId == Voxel::BlockID::Water && currentSettings.enableWaterFlow)
+                        {
+                            waterSim.registerSource(placeX, placeY, placeZ);
+                        }
+                    }
+                }
+            }
+
+            if (isGrabThrowCharging && isGPressed && isHoldingGrabbedBlock)
+            {
+                throwChargeTime += delta;
+                if (throwChargeTime > MAX_CHARGE_TIME)
+                    throwChargeTime = MAX_CHARGE_TIME;
+            }
+
+            if (isGPressed && !wasGPressed)
+            {
+                if (!isHoldingGrabbedBlock && targetBlock.has_value())
+                {
+                    const glm::ivec3& blockPos = targetBlock->blockPos;
+                    if (blockPos.y != 0)
+                    {
+                        Voxel::BlockID removedBlock = world->getBlockAt(
+                            static_cast<float>(blockPos.x),
+                            static_cast<float>(blockPos.y),
+                            static_cast<float>(blockPos.z));
+
+                        if (removedBlock != Voxel::BlockID::Air && removedBlock != Voxel::BlockID::Water && removedBlock != Voxel::BlockID::Bedrock)
+                        {
+                            world->setBlockAt(static_cast<float>(blockPos.x),
+                                             static_cast<float>(blockPos.y),
+                                             static_cast<float>(blockPos.z),
+                                             Voxel::BlockID::Air);
+                            isHoldingGrabbedBlock = true;
+                            grabbedBlockType = removedBlock;
+                            isGrabThrowCharging = false;
+                            throwChargeTime = 0.0f;
+
+                            // Notify water simulation that a block was grabbed
+                            if (currentSettings.enableWaterFlow)
+                            {
+                                waterSim.notifyBlockChange(blockPos.x, blockPos.y, blockPos.z);
+                                waterSim.queueDelayedScan(blockPos.x, blockPos.y, blockPos.z);
+                            }
+                        }
+                    }
+                }
+                else if (isHoldingGrabbedBlock && grabbedBlockType != Voxel::BlockID::Air)
+                {
+                    // Stage 2: second press starts charging
+                    isGrabThrowCharging = true;
+                    throwChargeTime = 0.0f;
+                }
+            }
+
+            // Stage 3: release G to throw using charged power
+            if (!isGPressed && wasGPressed && isGrabThrowCharging && isHoldingGrabbedBlock && grabbedBlockType != Voxel::BlockID::Air)
+            {
+                float chargePercent = throwChargeTime / MAX_CHARGE_TIME;
+                chargePercent = glm::clamp(chargePercent, 0.0f, 1.0f);
+                const float throwSpeed = MIN_THROW_SPEED + (MAX_THROW_SPEED - MIN_THROW_SPEED) * chargePercent;
+
+                // Compute throw origin and direction from the active camera
+                glm::vec3 throwDirection;
+                glm::vec3 throwOrigin;
+                if (cameraMode == CameraMode::FreeFly)
+                {
+                    throwDirection = flyCamera.forward();
+                    throwOrigin    = flyCamera.position() + throwDirection * 2.0f;
+                }
+                else if (cameraMode == CameraMode::Character)
+                {
+                    throwDirection = charCamera.forward();
+                    throwOrigin    = charCamera.position() + throwDirection * 2.0f;
+                }
+                else
+                {
+                    throwDirection = chaseCamera.forward();
+                    throwOrigin    = chaseCamera.position() + throwDirection * 2.0f;
+                }
+
+                // Create a physics-driven falling block with the charged velocity
+                auto fallingBlock = std::make_unique<WorldPhysics::FallingBlock>(grabbedBlockType, throwOrigin);
+                fallingBlock->setVelocity(glm::normalize(throwDirection) * throwSpeed);
+                blockPhysics->addFallingBlock(std::move(fallingBlock));
+
+                isHoldingGrabbedBlock = false;
+                grabbedBlockType      = Voxel::BlockID::Air;
+                isGrabThrowCharging   = false;
+                throwChargeTime       = 0.0f;
+            }
+
+            wasLeftPressed = isLeftPressed;
             wasRightPressed = isRightPressed;
+            wasGPressed = isGPressed;
         }
 
         // ---- Water Simulation Tick ----------------------------------------------
         if (currentSettings.enableWaterFlow && !dialogOpen && world)
         {
+            // Process delayed water scans every frame (accurate 1-second delay)
+            int blocksPerTick = static_cast<int>(currentSettings.waterFlowRate * 10.0f);
+            waterSim.updateDelayedScans(delta, world.get(), blocksPerTick);
+
             waterTickAccumulator += delta;
             float tickInterval = 1.0f / currentSettings.waterFlowRate;
 
@@ -1220,17 +1509,15 @@ int main()
             {
                 waterTickAccumulator -= tickInterval;
 
-                // Run water simulation update (within player range)
-                glm::vec3 playerPos;
-                if (cameraMode == CameraMode::FreeFly)
-                    playerPos = flyCamera.position();
-                else if (cameraMode == CameraMode::Character)
-                    playerPos = charCamera.position();
-                else
-                    playerPos = chaseCamera.position();
-
-                waterSim.update(world.get(), playerPos, 64.0f); // Update water within 64 blocks
+                // Continue processing scan-and-fill operations
+                waterSim.continueScanFill(world.get(), blocksPerTick);
             }
+        }
+
+        // ---- Block Physics Updates (falling/thrown blocks) ----------------------
+        if (!dialogOpen && world && blockPhysics)
+        {
+            blockPhysics->update(delta);
         }
 
         // Time progression control
@@ -1301,6 +1588,7 @@ int main()
                         worldMetadata.timeOfDay = timeOfDay;
                         worldMetadata.timePaused = timePaused;
                         worldMetadata.useLiveTime = useLiveTime;
+                        playerInventory.saveToMetadata(worldMetadata);
 
                         persistence->saveMetadata(worldMetadata);
 
@@ -1414,6 +1702,45 @@ int main()
         if (world)
             world->render(rr.mvpLoc, rr.chunkOffsetLoc, camPos, view, proj);
 
+        // ---- Falling physics blocks (thrown/dropped) ----------------------------
+        if (blockPhysics)
+        {
+            rr.fallingBlockRenderer.beginBatch(view, proj);
+            for (const auto& fallingBlock : blockPhysics->getFallingBlocks())
+            {
+                rr.fallingBlockRenderer.renderBlockBatch(
+                    fallingBlock->getPosition(),
+                    fallingBlock->getBlockType(),
+                    0.0f,  // no rotation
+                    1.0f,  // full block size
+                    fallingBlock->isUnderwater()
+                );
+            }
+            rr.fallingBlockRenderer.endBatch();
+        }
+
+        // ---- Held grabbed block preview -----------------------------------------
+        if (isHoldingGrabbedBlock && grabbedBlockType != Voxel::BlockID::Air)
+        {
+            glm::vec3 heldBlockPos;
+            if (cameraMode == CameraMode::FreeFly)
+                heldBlockPos = flyCamera.position() + flyCamera.forward() * 1.5f + glm::vec3(0.0f, -0.3f, 0.0f);
+            else if (cameraMode == CameraMode::Character)
+                heldBlockPos = charCamera.position() + charCamera.forward() * 1.5f + glm::vec3(0.0f, -0.3f, 0.0f);
+            else
+                heldBlockPos = chaseCamera.position() + chaseCamera.forward() * 1.5f + glm::vec3(0.0f, -0.3f, 0.0f);
+
+            rr.fallingBlockRenderer.beginBatch(view, proj);
+            rr.fallingBlockRenderer.renderBlockBatch(
+                heldBlockPos,
+                grabbedBlockType,
+                static_cast<float>(SDL_GetTicks64()) / 500.0f,  // gentle rotation
+                0.7f,   // slightly smaller for "held" appearance
+                false   // held blocks are never underwater
+            );
+            rr.fallingBlockRenderer.endBatch();
+        }
+
         // ---- Block highlight (wireframe cube) -----------------------------------
         if (targetBlock.has_value())
         {
@@ -1443,6 +1770,9 @@ int main()
         worldSelectionDialog.render(persistence.get());
         worldNameDialog.render();
         saveConfirmationDialog.render();
+
+        // Inventory window
+        inventoryUI.render(playerInventory, fbW, fbH);
 
         // Chase camera HUD - show when in chase mode
         if (cameraMode == CameraMode::Chase && chaseCameraHUD.isVisible())
@@ -1509,6 +1839,81 @@ int main()
         // Render analog clock in top-left
         analogClock.render(timeOfDay, fbW, fbH);
 
+        if (!loading)
+        {
+            hotbar.render(playerInventory, fbW, fbH);
+
+            if (isHoldingGrabbedBlock)
+            {
+                ImGui::SetNextWindowPos(ImVec2(fbW * 0.5f, fbH - 170), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                ImGui::SetNextWindowBgAlpha(0.35f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+                ImGui::Begin("GrabThrowHint", nullptr,
+                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize);
+                ImGui::Text("G: Charge/Throw held block");
+                ImGui::End();
+                ImGui::PopStyleVar(2);
+            }
+
+            if (isHoldingGrabbedBlock && throwChargeTime > 0.0f)
+            {
+                float chargePercent = throwChargeTime / MAX_CHARGE_TIME;
+                chargePercent = glm::clamp(chargePercent, 0.0f, 1.0f);
+
+                ImGui::SetNextWindowPos(ImVec2(fbW * 0.5f, fbH - 205), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+                ImGui::SetNextWindowBgAlpha(0.3f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+
+                ImGui::Begin("ThrowPowerIndicator", nullptr,
+                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize);
+
+                ImGui::Text("THROW POWER");
+
+                ImVec2 barSize(200.0f, 20.0f);
+                ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+                ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+                drawList->AddRectFilled(
+                    cursorPos,
+                    ImVec2(cursorPos.x + barSize.x, cursorPos.y + barSize.y),
+                    IM_COL32(30, 30, 30, 180));
+
+                float fillWidth = barSize.x * chargePercent;
+                ImU32 barColor;
+                if (chargePercent < 0.33f)
+                    barColor = IM_COL32(255, 255, 0, 220);
+                else if (chargePercent < 0.66f)
+                    barColor = IM_COL32(255, 165, 0, 220);
+                else
+                    barColor = IM_COL32(255, 0, 0, 220);
+
+                drawList->AddRectFilled(
+                    cursorPos,
+                    ImVec2(cursorPos.x + fillWidth, cursorPos.y + barSize.y),
+                    barColor);
+
+                drawList->AddRect(
+                    cursorPos,
+                    ImVec2(cursorPos.x + barSize.x, cursorPos.y + barSize.y),
+                    IM_COL32(255, 255, 255, 255),
+                    0.0f, 0, 2.0f);
+
+                ImGui::Dummy(barSize);
+
+                float currentSpeed = MIN_THROW_SPEED + (MAX_THROW_SPEED - MIN_THROW_SPEED) * chargePercent;
+                ImGui::Text("%.0f%%  (%.1f blocks/sec)", chargePercent * 100.0f, currentSpeed);
+
+                ImGui::End();
+                ImGui::PopStyleVar(2);
+            }
+        }
+
         // Render game menu (if visible) - should be on top of everything
         if (gameMenu.isVisible())
         {
@@ -1529,10 +1934,13 @@ int main()
     {
         worldMetadata.settings = currentSettings;
         worldMetadata.lastPlayedTime = std::time(nullptr);
+        playerInventory.saveToMetadata(worldMetadata);
         persistence->saveMetadata(worldMetadata);
         std::cout << "Final save: " << finalSaveCount << " chunks saved" << std::endl;
     }
 
+    hotbar.shutdown();
+    inventoryUI.shutdown();
     imguiManager.shutdown();
     rr.texArray.destroy();
     if (rr.skyVAO) glDeleteVertexArrays(1, &rr.skyVAO);
